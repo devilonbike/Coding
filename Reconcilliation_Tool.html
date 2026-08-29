@@ -664,12 +664,17 @@
                                                 <Table stickyHeader size="small" aria-label="data table">
                                                     <TableHead>
                                                         <TableRow>
-                                                            <TableCell sx={{ minWidth: 100, bgcolor: 'secondary.50', borderRight: '2px solid #ddd', zIndex: 11, position: 'sticky', left: 0, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
-                                                                <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: 'secondary.main' }}>PDF Page</Typography>
+                                                            {/* New Page Number Column */}
+                                                            <TableCell sx={{ minWidth: 100, bgcolor: '#e3f2fd', borderRight: '2px solid #ddd', zIndex: 11, position: 'sticky', left: 0, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
+                                                                <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: 'secondary.main' }}>
+                                                                    PDF Page
+                                                                </Typography>
                                                                 <Typography variant="caption" color="text.secondary">Matches found</Typography>
                                                             </TableCell>
+
+                                                            {/* Data & Live Preview Columns */}
                                                             {displayColumns.map((col) => (
-                                                                <TableCell key={col.id} sx={{ minWidth: col.isComputed ? 180 : 150, bgcolor: col.isComputed ? 'primary.50' : 'grey.100', verticalAlign: 'top', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
+                                                                <TableCell key={col.id} sx={{ minWidth: col.isComputed ? 180 : 150, bgcolor: col.isComputed ? '#e8f5e9' : '#f5f5f5', verticalAlign: 'top', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
                                                                     <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: col.isComputed ? 'primary.dark' : 'inherit' }}>
                                                                         {col.label}
                                                                         {col.isComputed && <Chip size="small" label="Search Key" color="primary" sx={{ ml: 1, height: 16, fontSize: '0.6rem' }} />}
@@ -684,43 +689,55 @@
                                                         </TableRow>
                                                     </TableHead>
                                                     <TableBody>
-                                                        {filteredRows.slice(0, 150).map((row) => {
+                                                        {filteredRows.map((row) => {
                                                             const matchData = matches[row.id];
                                                             const isSelected = activeMatchRowId === row.id;
 
                                                             return (
                                                                 <TableRow 
-                                                                    hover key={row.id} 
+                                                                    hover 
+                                                                    key={row.id} 
                                                                     onClick={() => matchData && setActiveMatchRowId(row.id)}
                                                                     sx={{ 
                                                                         cursor: matchData ? 'pointer' : 'default',
-                                                                        bgcolor: isSelected ? 'rgba(244, 67, 54, 0.1)' : 'inherit',
-                                                                        '&:hover': { bgcolor: matchData ? (isSelected ? 'rgba(244, 67, 54, 0.15)' : 'secondary.100') : 'action.hover' }
+                                                                        bgcolor: isSelected ? '#e3f2fd' : 'inherit',
+                                                                        '&:hover': { bgcolor: matchData ? '#bbdefb' : 'action.hover' }
                                                                     }}
                                                                 >
-                                                                    <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#fdecea' : (matchData ? 'secondary.50' : 'background.paper'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
+                                                                    {/* Page Number Cell */}
+                                                                    <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#bbdefb' : (matchData ? '#e3f2fd' : '#ffffff'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
                                                                         {matchData ? (
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: isSelected ? '#d32f2f' : 'inherit' }}>
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                                                                 Pg {matchData.pageNum}
                                                                                 <Icon name="maximize" size={14} />
                                                                             </Box>
                                                                         ) : '-'}
                                                                     </TableCell>
+
+                                                                    {/* Data Cells */}
                                                                     {displayColumns.map((col) => {
                                                                         let cellValue = '';
-                                                                        if (col.isOriginal) cellValue = row[col.id] || '';
-                                                                        else if (col.isComputed) cellValue = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
+                                                                        if (col.isOriginal) {
+                                                                            cellValue = row[col.id] || '';
+                                                                        } else if (col.isComputed) {
+                                                                            cellValue = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
+                                                                        }
                                                                         const isError = cellValue === '#ERROR';
+                                                                        
                                                                         return (
-                                                                            <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? 'primary.50' : 'inherit', color: isError ? 'error.main' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
-                                                                                <Tooltip title={cellValue} placement="top-start" arrow disableInteractive><span>{cellValue}</span></Tooltip>
+                                                                            <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? '#e8f5e9' : 'inherit', color: isError ? 'error.main' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
+                                                                                <Tooltip title={cellValue} placement="top-start" arrow disableInteractive>
+                                                                                    <span>{cellValue}</span>
+                                                                                </Tooltip>
                                                                             </TableCell>
                                                                         );
                                                                     })}
                                                                 </TableRow>
                                                             );
                                                         })}
-                                                        {filteredRows.length === 0 && <TableRow><TableCell colSpan={headers.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>}
+                                                        {filteredRows.length === 0 && (
+                                                            <TableRow><TableCell colSpan={headers.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>
+                                                        )}
                                                     </TableBody>
                                                 </Table>
                                             </TableContainer>
