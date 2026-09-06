@@ -5,20 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Automated Reconciliation Platform</title>
     
-    <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    
-    <!-- Material UI -->
     <script crossorigin src="https://unpkg.com/@mui/material@5.15.11/umd/material-ui.production.min.js"></script>
-    
-    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
-    
-    <!-- Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
-    <!-- PDF Lib for Drawing Rectangles -->
     <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
 
     <style>
@@ -33,7 +24,6 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // Wrapper component to instantiate Lucide icons in a browser-only environment
         const Icon = ({ name, size = 24, color = 'currentColor', ...props }) => {
             const iconRef = React.useRef(null);
             React.useEffect(() => {
@@ -52,7 +42,8 @@
             Chip, createTheme, ThemeProvider, CssBaseline, Box, Container, Typography,
             Paper, Grid, Button, IconButton, FormControl, TextField, CircularProgress,
             TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Tooltip,
-            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, Divider
+            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, Divider,
+            Switch, FormControlLabel
         } = MaterialUI;
 
         const theme = createTheme({
@@ -75,7 +66,6 @@
                     return saved ? JSON.parse(saved) : DEFAULT_MODULES;
                 } catch (e) { return DEFAULT_MODULES; }
             });
-            
             useEffect(() => { localStorage.setItem('pdf_matcher_modules', JSON.stringify(modules)); }, [modules]);
             
             const addModule = (newModule) => setModules(prev => [...prev, { ...newModule, id: `mod_custom_${Date.now()}` }]);
@@ -88,7 +78,6 @@
                 downloadAnchorNode.setAttribute("download", "formatting_modules.json");
                 document.body.appendChild(downloadAnchorNode); downloadAnchorNode.click(); downloadAnchorNode.remove();
             };
-            
             const importModules = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
@@ -123,24 +112,23 @@
             const [workbook, setWorkbook] = useState(null);
             const [sheetNames, setSheetNames] = useState([]);
             const [fileName, setFileName] = useState('');
-            const [error, setError] = useState(null);
-            const [loading, setLoading] = useState(false);
+            const [uploadError, setUploadError] = useState(null);
+            const [uploadLoading, setUploadLoading] = useState(false);
             
             const handleFileUpload = useCallback(async (event) => {
-                if (!xlsxLoaded || !window.XLSX) { setError("Excel library not loaded."); return; }
+                if (!xlsxLoaded || !window.XLSX) { setUploadError("Excel library not loaded."); return; }
                 const file = event.target.files[0];
                 if (!file) return;
-                setLoading(true); setError(null); setFileName(file.name); setWorkbook(null); setSheetNames([]);
+                setUploadLoading(true); setUploadError(null); setFileName(file.name); setWorkbook(null); setSheetNames([]);
                 try {
                     const data = await file.arrayBuffer();
                     const wb = window.XLSX.read(data, { type: 'array' });
                     setWorkbook(wb); setSheetNames(wb.SheetNames || []);
-                } catch (err) { setError("Failed to read Excel file."); setFileName(''); } 
-                finally { setLoading(false); if (event.target) event.target.value = null; }
+                } catch (err) { setUploadError("Failed to read Excel file."); setFileName(''); } 
+                finally { setUploadLoading(false); if (event.target) event.target.value = null; }
             }, [xlsxLoaded]);
-            
-            const resetUpload = useCallback(() => { setWorkbook(null); setSheetNames([]); setFileName(''); setError(null); setLoading(false); }, []);
-            return { workbook, sheetNames, fileName, error, loading, handleFileUpload, resetUpload, setError };
+            const resetUpload = useCallback(() => { setWorkbook(null); setSheetNames([]); setFileName(''); setUploadError(null); setUploadLoading(false); }, []);
+            return { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError };
         };
 
         const useSheetData = (workbook, selectedSheetName) => {
@@ -148,7 +136,7 @@
             const [customRange, setCustomRange] = useState('');
             const [headers, setHeaders] = useState([]);
             const [rows, setRows] = useState([]);
-            const [error, setError] = useState(null);
+            const [sheetError, setSheetError] = useState(null);
             
             const extractDataFromRange = useCallback((sheet, rangeStr) => {
                 if (!window.XLSX) return { extractedHeaders: [], extractedRows: [] };
@@ -163,17 +151,18 @@
                         return rowData;
                     });
                     return { extractedHeaders, extractedRows };
-                } catch (err) { setError("Invalid range."); return { extractedHeaders: [], extractedRows: [] }; }
+                } catch (err) { setSheetError("Invalid range."); return { extractedHeaders: [], extractedRows: [] }; }
             }, []);
 
             useEffect(() => {
-                if (!workbook || !selectedSheetName) { setSuggestedRange(''); setCustomRange(''); setHeaders([]); setRows([]); setError(null); return; }
+                if (!workbook || !selectedSheetName) { setSuggestedRange(''); setCustomRange(''); setHeaders([]); setRows([]); setSheetError(null); return; }
                 try {
                     const sheet = workbook.Sheets[selectedSheetName];
-                    if (!sheet) return setError("Sheet not found.");
+                    if (!sheet) return setSheetError("Sheet not found.");
                     const sheetRef = sheet['!ref'];
-                    if (sheetRef) { setSuggestedRange(sheetRef); setCustomRange(sheetRef); setError(null); } else setError("Sheet is empty.");
-                } catch (err) { setError("Error analyzing sheet."); }
+                    if (sheetRef) { setSuggestedRange(sheetRef); setCustomRange(sheetRef); setSheetError(null); } 
+                    else setSheetError("Sheet is empty.");
+                } catch (err) { setSheetError("Error analyzing sheet."); }
             }, [workbook, selectedSheetName]);
 
             useEffect(() => {
@@ -185,8 +174,8 @@
                 }
             }, [workbook, selectedSheetName, customRange, extractDataFromRange]);
 
-            const handleRangeChange = (newRange) => { setCustomRange(newRange.toUpperCase()); setError(null); };
-            return { suggestedRange, customRange, headers, rows, handleRangeChange, error, setCustomRange };
+            const handleRangeChange = (newRange) => { setCustomRange(newRange.toUpperCase()); setSheetError(null); };
+            return { suggestedRange, customRange, headers, rows, handleRangeChange, sheetError, setCustomRange };
         };
 
         const useFilteredData = (rows, filters) => {
@@ -209,7 +198,6 @@
         const evaluatePipeline = (val, pipelineModuleIds, allModules) => {
             if (!pipelineModuleIds || pipelineModuleIds.length === 0) return [String(val || '').trim()];
             let currentVals = [String(val || '').trim()];
-            
             for (const modId of pipelineModuleIds) {
                 const module = allModules.find(m => m.id === modId);
                 if (!module) continue;
@@ -225,11 +213,8 @@
                             nextVals.push(String(result !== undefined && result !== null ? result : '').trim());
                         }
                     }
-                    // Filter duplicates and empties
                     currentVals = [...new Set(nextVals.filter(v => v !== ''))];
-                } catch (e) {
-                    return ['#ERROR'];
-                }
+                } catch (e) { return ['#ERROR']; }
             }
             return currentVals.length > 0 ? currentVals : [''];
         };
@@ -237,16 +222,22 @@
         const usePdfUploader = (pdfLoaded) => {
             const [pdfData, setPdfData] = useState(null);
             const [pdfFileName, setPdfFileName] = useState('');
-            const [error, setError] = useState(null);
+            const [pdfUploadError, setPdfUploadError] = useState(null);
+            const [pdfUploadLoading, setPdfUploadLoading] = useState(false);
+
             const handlePdfUpload = useCallback(async (event) => {
-                if (!pdfLoaded || !window.pdfjsLib) return setError("PDF library not loaded.");
+                if (!pdfLoaded || !window.pdfjsLib) return setPdfUploadError("PDF library not loaded.");
                 const file = event.target.files[0];
                 if (!file) return;
-                setError(null); setPdfFileName(file.name); setPdfData(null);
-                try { setPdfData(await file.arrayBuffer()); } catch (err) { setError("Failed to read PDF."); setPdfFileName(''); } finally { if (event.target) event.target.value = null; }
+                setPdfUploadLoading(true);
+                setPdfUploadError(null); setPdfFileName(file.name); setPdfData(null);
+                try { setPdfData(await file.arrayBuffer()); } 
+                catch (err) { setPdfUploadError("Failed to read PDF."); setPdfFileName(''); } 
+                finally { setPdfUploadLoading(false); if (event.target) event.target.value = null; }
             }, [pdfLoaded]);
-            const resetPdfUpload = useCallback(() => { setPdfData(null); setPdfFileName(''); setError(null); }, []);
-            return { pdfData, pdfFileName, error, handlePdfUpload, resetPdfUpload, setError };
+
+            const resetPdfUpload = useCallback(() => { setPdfData(null); setPdfFileName(''); setPdfUploadError(null); }, []);
+            return { pdfData, pdfFileName, pdfUploadError, pdfUploadLoading, handlePdfUpload, resetPdfUpload, setPdfUploadError };
         };
 
         const usePdfMatcher = () => {
@@ -257,7 +248,7 @@
 
             const runMatching = async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, allModules) => {
                 if (!pdfData || !filteredRows.length || !selectedHeaderIds.length || !window.pdfjsLib) return;
-                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing scanner...');
+                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing concurrent scanner...');
                 try {
                     const dataCopy = pdfData.slice(0);
                     const doc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
@@ -265,48 +256,45 @@
                     const newMatches = {};
                     const SCALE = 2.0; 
 
-                    setStatusText(`Scanning ${numPages} Pages concurrently...`);
+                    setStatusText(`Scanning ${numPages} Pages...`);
                     
-                    // Scan all pages in parallel for speed
                     const pagePromises = Array.from({ length: numPages }, async (_, index) => {
-                      const i = index + 1;
-                      const page = await doc.getPage(i);
-                      const textContent = await page.getTextContent();
-                      const viewport = page.getViewport({ scale: SCALE });
-                      
-                      const lines = [];
-                      textContent.items.forEach(item => {
-                          if (!item.str || !item.str.trim()) return; 
-                          const tx = item.transform[4];
-                          const ty = item.transform[5];
-                          const w = item.width;
-                          const h = item.height || 12;
-                          const [x0, y0] = viewport.convertToViewportPoint(tx, ty + h);
-                          const [x1, y1] = viewport.convertToViewportPoint(tx + w, ty);
-                          
-                          const line = lines.find(l => Math.abs(l.y - y1) < 5);
-                          const mappedItem = { text: item.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
-                          if (line) {
-                              line.items.push(mappedItem);
-                              line.minY = Math.min(line.minY, mappedItem.y0);
-                              line.maxY = Math.max(line.maxY, mappedItem.y1);
-                              line.minX = Math.min(line.minX, mappedItem.x0);
-                              line.maxX = Math.max(line.maxX, mappedItem.x1);
-                          } else {
-                              lines.push({ y: y1, minY: mappedItem.y0, maxY: mappedItem.y1, minX: mappedItem.x0, maxX: mappedItem.x1, items: [mappedItem] });
-                          }
-                      });
-                      
-                      lines.forEach(l => {
-                          l.items.sort((a, b) => a.x0 - b.x0);
-                          l.fullText = l.items.map(i => i.text).join('').toLowerCase(); 
-                      });
-                      setProgress(prev => Math.min(50, prev + Math.round(50 / numPages)));
-                      return { pageNumber: i, lines };
+                        const i = index + 1;
+                        const page = await doc.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const viewport = page.getViewport({ scale: SCALE });
+                        const lines = [];
+                        textContent.items.forEach(item => {
+                            if (!item.str || !item.str.trim()) return; 
+                            const tx = item.transform[4];
+                            const ty = item.transform[5];
+                            const w = item.width;
+                            const h = item.height || 12;
+                            const [x0, y0] = viewport.convertToViewportPoint(tx, ty + h);
+                            const [x1, y1] = viewport.convertToViewportPoint(tx + w, ty);
+                            
+                            const line = lines.find(l => Math.abs(l.y - y1) < 5);
+                            const mappedItem = { text: item.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
+                            if (line) {
+                                line.items.push(mappedItem);
+                                line.minY = Math.min(line.minY, mappedItem.y0);
+                                line.maxY = Math.max(line.maxY, mappedItem.y1);
+                                line.minX = Math.min(line.minX, mappedItem.x0);
+                                line.maxX = Math.max(line.maxX, mappedItem.x1);
+                            } else {
+                                lines.push({ y: y1, minY: mappedItem.y0, maxY: mappedItem.y1, minX: mappedItem.x0, maxX: mappedItem.x1, items: [mappedItem] });
+                            }
+                        });
+                        lines.forEach(l => {
+                            l.items.sort((a, b) => a.x0 - b.x0);
+                            l.fullText = l.items.map(i => i.text).join('').toLowerCase(); 
+                        });
+                        return { pageNumber: i, lines };
                     });
 
                     const pageTexts = await Promise.all(pagePromises);
-                    setStatusText('Cross-referencing logic (AND of ORs)...');
+                    setProgress(50);
+                    setStatusText('Cross-referencing Excel data with PDF layout...');
                     let processedRows = 0;
                     
                     for (const row of filteredRows) {
@@ -318,7 +306,6 @@
                         }).filter(group => group.length > 0); 
 
                         const hasStrongTarget = searchGroups.some(group => group.some(t => t.replace(/\s+/g, '').length > 3));
-                        
                         if (searchGroups.length > 0 && hasStrongTarget) {
                             let foundMatch = null;
                             for (const { pageNumber, lines } of pageTexts) {
@@ -374,20 +361,19 @@
 
             useEffect(() => {
                 if (activeRowId && highlights?.some(h => h.rowId === activeRowId)) {
-                    containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }
             }, [activeRowId, highlights]);
 
             const displayScale = 1.0 * zoom; 
             let cssWidth = 'auto', cssHeight = 'auto';
-            
             if (renderData) {
                 cssWidth = `${(renderData.viewport.width / renderData.baseScale) * displayScale}px`;
                 cssHeight = `${(renderData.viewport.height / renderData.baseScale) * displayScale}px`;
             }
 
             return (
-                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, boxShadow: 3, bgcolor: 'white', width: cssWidth, height: cssHeight }}>
+                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, mx: 'auto', boxShadow: 3, bgcolor: 'white', width: cssWidth, height: cssHeight, transition: 'width 0.15s ease, height 0.15s ease', flexShrink: 0 }}>
                     <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
                     {renderData && highlights?.map((hl, idx) => {
                         const { x, y, w, h, sourceScale } = hl.boundingBox;
@@ -406,12 +392,12 @@
                         );
                     })}
                 </Box>
-            );
-        };
-
-        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf }) => {
+    );
+};
+        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf, isMatching, progress }) => {
             const [doc, setDoc] = useState(null);
             const [numPages, setNumPages] = useState(0);
+            const [isPdfParsing, setIsPdfParsing] = useState(false);
             const [zoom, setZoom] = useState(1);
             const [isPanning, setIsPanning] = useState(false);
             const containerRef = useRef(null);
@@ -421,12 +407,21 @@
 
             useEffect(() => {
                 const loadPdf = async () => {
-                    if (!pdfData || !window.pdfjsLib) return;
+                    if (!pdfData || !window.pdfjsLib) {
+                        setDoc(null);
+                        setNumPages(0);
+                        return;
+                    }
+                    // Trigger spinner
+                    setNumPages(0);
+                    setIsPdfParsing(true);
                     try {
                         const dataCopy = pdfData.slice(0);
                         const loadedDoc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
-                        setDoc(loadedDoc); setNumPages(loadedDoc.numPages);
+                        setDoc(loadedDoc); 
+                        setNumPages(loadedDoc.numPages);
                     } catch(e) { console.error(e); }
+                    finally { setIsPdfParsing(false); }
                 };
                 loadPdf();
             }, [pdfData]);
@@ -456,16 +451,31 @@
             };
             const handleMouseUpOrLeave = () => {
                 if (isDragging.current) {
-                    isDragging.current = false;
-                    if (containerRef.current) containerRef.current.style.cursor = isPanning ? 'grab' : 'auto';
-                }
-            };
+            isDragging.current = false;
+            if (containerRef.current) containerRef.current.style.cursor = isPanning ? 'grab' : 'auto';
+        }
+    };
 
-            if (!pdfData) return <Typography color="text.secondary" sx={{ p: 2 }}>No PDF uploaded</Typography>;
-            if (numPages === 0) return <CircularProgress size={24} sx={{ display: 'block', margin: 'auto', mt: 4 }} />;
+    if (!pdfData) return (
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#f5f5f5' }}>
+            <Typography color="text.secondary">No PDF uploaded</Typography>
+        </Box>
+    );
+    
+    if (numPages === 0 || isPdfParsing || isMatching) return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#9e9e9e' }}>
+            <CircularProgress size={50} sx={{ mb: 3 }} color="inherit" style={{ color: 'white' }} />
+            <Typography color="white" variant="h6">
+                {isMatching ? 'Reconciling Data...' : 'Parsing Document...'}
+            </Typography>
+            <Typography color="white" variant="body2" sx={{ opacity: 0.8 }}>
+                {isMatching ? `${progress}% Complete` : 'This may take a few seconds for large PDFs'}
+            </Typography>
+        </Box>
+    );
 
-            return (
-                <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+    return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
                     <Box sx={{ display: 'flex', gap: 1, p: 1, borderBottom: '1px solid #ddd', bgcolor: '#f5f5f5', alignItems: 'center', flexWrap: 'wrap' }}>
                         <IconButton size="small" onClick={() => setZoom(z => Math.max(0.5, z - 0.2))} title="Zoom Out"><Icon name="zoom-out" size={18} /></IconButton>
                         <Typography variant="body2" sx={{ minWidth: 40, textAlign: 'center' }}>{Math.round(zoom * 100)}%</Typography>
@@ -485,8 +495,8 @@
                         ref={containerRef}
                         onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUpOrLeave} onMouseLeave={handleMouseUpOrLeave}
                         sx={{ 
-                            flexGrow: 1, overflow: 'auto', bgcolor: '#9e9e9e', p: 2, 
-                            display: 'flex', flexDirection: 'column', alignItems: 'center',
+                            flexGrow: 1, width: '100%', overflow: 'auto', bgcolor: '#9e9e9e', p: 2, 
+                            display: 'block', 
                             cursor: isPanning ? 'grab' : 'auto', userSelect: isPanning ? 'none' : 'auto'
                         }}
                     >
@@ -548,7 +558,6 @@
         };
 
         function App() {
-            // Using precise, unbroken CDN strings
             const { loaded: xlsxLoaded, error: xlsxError } = useScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
             const { loaded: pdfLoaded, error: pdfJsError } = useScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
             useScript('https://unpkg.com/pdf-lib/dist/pdf-lib.min.js');
@@ -557,9 +566,9 @@
                 if (pdfLoaded && window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
             }, [pdfLoaded]);
 
-            const { workbook, sheetNames, fileName, error: uploadError, loading: uploadLoading, handleFileUpload, resetUpload, setError: setUploadError } = useExcelUploader(xlsxLoaded);
+            const { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError } = useExcelUploader(xlsxLoaded);
             const [selectedSheet, setSelectedSheet] = useState('');
-            const { suggestedRange, customRange, headers, rows, handleRangeChange, error: sheetError } = useSheetData(workbook, selectedSheet);
+            const { suggestedRange, customRange, headers, rows, handleRangeChange, sheetError } = useSheetData(workbook, selectedSheet);
             
             const [filters, setFilters] = useState({});
             const filteredRows = useFilteredData(rows, filters);
@@ -568,10 +577,11 @@
             const { selectedHeaderIds, handleHeaderSelectionChange, headerPipelines, addModuleToPipeline, removeModuleFromPipeline } = useHeaderSelection();
             const [isModuleManagerOpen, setIsModuleManagerOpen] = useState(false);
 
-            const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, error: pdfUploadError } = usePdfUploader(pdfLoaded);
+            const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, pdfUploadError, pdfUploadLoading } = usePdfUploader(pdfLoaded);
             const { runMatching, isMatching, matches, progress, statusText } = usePdfMatcher();
 
-            // Dynamically calculate distinct columns based on max array length returned by pipelines
+            const [showOnlySelectedColumns, setShowOnlySelectedColumns] = useState(false);
+
             const displayColumns = useMemo(() => {
                 const cols = [];
                 const maxVariations = {};
@@ -592,8 +602,11 @@
                 });
 
                 headers.forEach(header => {
+                    const isSelected = selectedHeaderIds.includes(header.id);
+                    if (showOnlySelectedColumns && selectedHeaderIds.length > 0 && !isSelected) return;
+
                     cols.push({ ...header, isOriginal: true });
-                    if (selectedHeaderIds.includes(header.id)) {
+                    if (isSelected) {
                         const count = maxVariations[header.id] || 1;
                         for (let i = 0; i < count; i++) {
                             cols.push({ 
@@ -608,7 +621,18 @@
                     }
                 });
                 return cols;
-            }, [headers, selectedHeaderIds, headerPipelines, modules, filteredRows]);
+            }, [headers, selectedHeaderIds, headerPipelines, modules, filteredRows, showOnlySelectedColumns]);
+
+            const rowComputedData = useMemo(() => {
+                const data = {};
+                filteredRows.forEach(row => {
+                    data[row.id] = {};
+                    selectedHeaderIds.forEach(id => {
+                        data[row.id][id] = evaluatePipeline(row[id], headerPipelines[id], modules);
+                    });
+                });
+                return data;
+            }, [filteredRows, selectedHeaderIds, headerPipelines, modules]);
 
             const [activeMatchRowId, setActiveMatchRowId] = useState(null); 
             const fileInputRef = useRef(null);
@@ -622,28 +646,25 @@
                 else setSelectedSheet('');
             }, [sheetNames]);
 
-            useEffect(() => { setFilters({}); setActiveMatchRowId(null); }, [selectedSheet, customRange]);
+            useEffect(() => { setFilters({}); setActiveMatchRowId(null); setShowOnlySelectedColumns(false); }, [selectedSheet, customRange]);
 
             const handleExportExcel = () => {
                 if (!window.XLSX || filteredRows.length === 0) return;
-                
                 const exportData = filteredRows.map(row => {
                     const rowData = {};
                     const matchData = matches[row.id];
                     rowData['PDF Match Page'] = matchData ? `Page ${matchData.pageNum}` : 'Not Found';
-                    
                     displayColumns.forEach(col => {
                         if (col.isOriginal) {
                             rowData[col.label] = row[col.id] || '';
                         } else if (col.isComputed) {
-                            const computedResults = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
-                            const arr = Array.isArray(computedResults) ? computedResults : [computedResults];
+                            const resultArr = rowComputedData[row.id][col.originalId];
+                            const arr = Array.isArray(resultArr) ? resultArr : [resultArr];
                             rowData[col.label] = String(arr[col.variationIndex] !== undefined && arr[col.variationIndex] !== null ? arr[col.variationIndex] : '');
                         }
                     });
                     return rowData;
                 });
-
                 const worksheet = window.XLSX.utils.json_to_sheet(exportData);
                 const workbook = window.XLSX.utils.book_new();
                 window.XLSX.utils.book_append_sheet(workbook, worksheet, "Reconciliation Results");
@@ -656,25 +677,21 @@
                     const { PDFDocument, rgb } = window.PDFLib;
                     const pdfDoc = await PDFDocument.load(pdfData);
                     const pages = pdfDoc.getPages();
-                    
                     Object.values(matches).forEach(match => {
                         const page = pages[match.pageNum - 1];
                         if (!page) return;
                         const { height } = page.getSize();
                         const { x, y, w, h, sourceScale } = match.boundingBox;
-                        
                         const pdfX = x / sourceScale;
                         const pdfW = w / sourceScale;
                         const pdfH = h / sourceScale;
                         const pdfY = height - (y / sourceScale) - pdfH;
-                        
                         page.drawRectangle({
                             x: pdfX, y: pdfY, width: pdfW, height: pdfH,
                             borderColor: rgb(1, 0.2, 0.2), borderWidth: 1.5,
                             color: rgb(1, 0.2, 0.2), opacity: 0.1, borderOpacity: 0.8
                         });
                     });
-                    
                     const pdfBytes = await pdfDoc.save();
                     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
                     const link = document.createElement('a');
@@ -773,8 +790,8 @@
                                             <Typography variant="h6">2. Configure PDF Matcher</Typography>
                                             <input type="file" accept="application/pdf" style={{ display: 'none' }} ref={pdfInputRef} onChange={handlePdfUpload} />
                                             {!pdfFileName ? (
-                                                <Button variant="outlined" color="secondary" startIcon={<Icon name="file-text" />} onClick={() => pdfInputRef.current?.click()} disabled={!pdfLoaded} fullWidth sx={{ py: 1.5 }}>
-                                                    Upload Target PDF
+                                                <Button variant="outlined" color="secondary" startIcon={pdfUploadLoading ? <CircularProgress size={20} color="inherit" /> : <Icon name="file-text" />} onClick={() => pdfInputRef.current?.click()} disabled={!pdfLoaded || pdfUploadLoading} fullWidth sx={{ py: 1.5 }}>
+                                                    {pdfUploadLoading ? 'Reading PDF...' : 'Upload Target PDF'}
                                                 </Button>
                                             ) : (
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, border: '1px solid', borderColor: 'secondary.main', borderRadius: 1, bgcolor: '#e3f2fd' }}>
@@ -801,10 +818,7 @@
                                             </FormControl>
 
                                             <Button 
-                                                variant="contained" 
-                                                color="primary" 
-                                                fullWidth 
-                                                size="large"
+                                                variant="contained" color="primary" fullWidth size="large"
                                                 startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="settings" />}
                                                 onClick={() => runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules)}
                                                 disabled={isMatching || !pdfData || selectedHeaderIds.length === 0 || filteredRows.length === 0}
@@ -821,22 +835,35 @@
                                 </Grid>
                             </Paper>
 
-                            {/* Data Grid & PDF Viewer */}
+                            {}
                             {selectedSheet && headers.length > 0 && (
-                                <Grid container spacing={3}>
-                                    <Grid item xs={12} lg={7}>
+                                <Grid container spacing={3} sx={{ height: { xs: 'auto', lg: '75vh' }, minHeight: 600 }}>
+                                    <Grid item xs={12} lg={7} sx={{ height: { xs: '65vh', lg: '100%' }, mb: { xs: 3, lg: 0 } }}>
                                         <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                    <Icon name="filter" size={24} color="#2e7d32" />
-                                                    <Typography variant="h6">Data Grid ({filteredRows.length} rows)</Typography>
+                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                        <Icon name="filter" size={24} color="#2e7d32" />
+                                                        <Typography variant="h6">Data Grid ({filteredRows.length} rows)</Typography>
+                                                    </Box>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch 
+                                                                size="small" 
+                                                                checked={showOnlySelectedColumns && selectedHeaderIds.length > 0} 
+                                                                onChange={(e) => setShowOnlySelectedColumns(e.target.checked)} 
+                                                                disabled={selectedHeaderIds.length === 0}
+                                                            />
+                                                        }
+                                                        label={<Typography variant="body2" color="text.secondary">Show only selected columns</Typography>}
+                                                    />
                                                 </Box>
                                                 <Button size="small" variant="outlined" color="primary" startIcon={<Icon name="download" size={16} />} onClick={handleExportExcel} disabled={filteredRows.length === 0}>
                                                     Export Data
                                                 </Button>
                                             </Box>
 
-                                            <TableContainer component={Box} sx={{ flexGrow: 1, maxHeight: '65vh', overflowX: 'auto', border: '1px solid #e0e0e0' }}>
+                                            <TableContainer component={Box} sx={{ flexGrow: 1, overflow: 'auto', border: '1px solid #e0e0e0' }}>
                                                 <Table stickyHeader size="small" aria-label="data table">
                                                     <TableHead>
                                                         <TableRow>
@@ -865,12 +892,7 @@
                                                         {filteredRows.map((row) => {
                                                             const matchData = matches[row.id];
                                                             const isSelected = activeMatchRowId === row.id;
-                                                            
-                                                            // Pre-calculate pipelines for this row so columns can just read the index
-                                                            const computedResults = {};
-                                                            selectedHeaderIds.forEach(id => {
-                                                                computedResults[id] = evaluatePipeline(row[id], headerPipelines[id], modules);
-                                                            });
+                                                            const computedResults = rowComputedData[row.id];
 
                                                             return (
                                                                 <TableRow hover key={row.id} onClick={() => matchData && setActiveMatchRowId(row.id)} sx={{ cursor: matchData ? 'pointer' : 'default', bgcolor: isSelected ? '#e3f2fd' : 'inherit', '&:hover': { bgcolor: matchData ? '#bbdefb' : 'action.hover' } }}>
@@ -913,15 +935,15 @@
                                         </Paper>
                                     </Grid>
                                     
-                                    <Grid item xs={12} lg={5}>
-                                        <Paper sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #ddd' }}>
-                                            <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} exportPdf={handleExportPdf} />
-                                        </Paper>
-                                    </Grid>
-                                </Grid>
-                            )}
+                                    <Grid item xs={12} lg={5} sx={{ height: { xs: '75vh', lg: '100%' } }}>
+                                <Paper sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #ddd' }}>
+                                    <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} exportPdf={handleExportPdf} isMatching={isMatching} progress={progress} />
+                                </Paper>
+                            </Grid>
+                        </Grid>
+                    )}
                         </Container>
-                                        
+                        
                         <ModuleManagerDialog
                             open={isModuleManagerOpen}
                             onClose={() => setIsModuleManagerOpen(false)}
