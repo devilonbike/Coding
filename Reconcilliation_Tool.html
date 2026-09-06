@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Excel & PDF Matcher Dashboard</title>
+    <title>Automated Reconciliation Platform</title>
     
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -48,7 +48,8 @@
             Chip, createTheme, ThemeProvider, CssBaseline, Box, Container, Typography,
             Paper, Grid, Button, IconButton, FormControl, TextField, CircularProgress,
             TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Tooltip,
-            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem
+            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem,
+            ListItemSecondaryAction, Divider
         } = MaterialUI;
 
         const theme = createTheme({
@@ -213,19 +214,32 @@
         };
 
         const evaluatePipeline = (val, pipelineModuleIds, allModules) => {
-            if (!pipelineModuleIds || pipelineModuleIds.length === 0) return String(val || '').trim();
-            let currentVal = String(val || '').trim();
+            if (!pipelineModuleIds || pipelineModuleIds.length === 0) return [String(val || '').trim()];
+            
+            let currentVals = [String(val || '').trim()];
+            
             for (const modId of pipelineModuleIds) {
                 const module = allModules.find(m => m.id === modId);
                 if (!module) continue;
                 try {
                     const script = module.code.includes('return') ? module.code : `return ${module.code};`;
                     const fn = new Function('value', script);
-                    const result = fn(currentVal);
-                    currentVal = result === undefined || result === null ? '' : String(result).trim();
-                } catch (e) { return '#ERROR'; }
+                    
+                    let nextVals = [];
+                    for (const currentVal of currentVals) {
+                        const result = fn(currentVal);
+                        if (Array.isArray(result)) {
+                            nextVals.push(...result.map(v => String(v !== undefined && v !== null ? v : '').trim()));
+                        } else {
+                            nextVals.push(String(result !== undefined && result !== null ? result : '').trim());
+                        }
+                    }
+                    currentVals = [...new Set(nextVals.filter(v => v !== ''))];
+                } catch (e) {
+                    return ['#ERROR'];
+                }
             }
-            return currentVal;
+            return currentVals;
         };
 
         const usePdfMatcher = () => {
@@ -280,19 +294,24 @@
                     let processedRows = 0;
                     
                     for (const row of filteredRows) {
-                        const searchTargets = selectedHeaderIds.map(id => {
-                            const computedVal = evaluatePipeline(row[id], headerPipelines[id], allModules);
-                            return computedVal === '#ERROR' ? '' : computedVal.toLowerCase();
-                        }).filter(val => val.length > 0); 
+                        const searchGroups = selectedHeaderIds.map(id => {
+                            const rawVal = row[id];
+                            const pipeline = headerPipelines[id] || [];
+                            const computedVals = evaluatePipeline(rawVal, pipeline, allModules);
+                            return computedVals.includes('#ERROR') ? [] : computedVals.map(v => v.toLowerCase()).filter(v => v.length > 0);
+                        }).filter(group => group.length > 0); 
 
-                        const hasStrongTarget = searchTargets.some(t => t.replace(/\s+/g, '').length > 3);
+                        const hasStrongTarget = searchGroups.some(group => group.some(t => t.replace(/\s+/g, '').length > 3));
 
-                        if (searchTargets.length > 0 && hasStrongTarget) {
+                        if (searchGroups.length > 0 && hasStrongTarget) {
                             let foundMatch = null;
                             for (const { pageNumber, lines } of pageTexts) {
                                 for (const line of lines) {
                                     const lineTextNoSpace = line.fullText.replace(/\s+/g, '');
-                                    const allFound = searchTargets.every(target => lineTextNoSpace.includes(target.replace(/\s+/g, '')));
+                                    const allFound = searchGroups.every(group => 
+                                        group.some(target => lineTextNoSpace.includes(target.replace(/\s+/g, '')))
+                                    );
+
                                     if (allFound) {
                                         foundMatch = { pageNum: pageNumber, boundingBox: { x: line.minX - 4, y: line.minY - 4, w: (line.maxX - line.minX) + 8, h: (line.maxY - line.minY) + 8, sourceScale: SCALE } };
                                         break; 
@@ -469,7 +488,7 @@
                     headers.forEach(h => { rowData[h.label] = row[h.id]; });
                     selectedHeaderIds.forEach(id => {
                         const h = headers.find(h => h.id === id);
-                        if (h) rowData[`${h.label} (Formatted)`] = evaluatePipeline(row[id], headerPipelines[id], modules);
+                        if (h) rowData[`${h.label} (Formatted)`] = evaluatePipeline(row[id], headerPipelines[id], modules).join('  OR  ');
                     });
                     const match = matches[row.id];
                     rowData['PDF Match Found'] = match ? `Yes (Page ${match.pageNum})` : 'No';
@@ -514,7 +533,7 @@
                         <Container maxWidth="xl">
                             <Box sx={{ mb: 4, textAlign: 'center' }}>
                                 <Typography variant="h3" component="h1" gutterBottom sx={{ fontWeight: 'bold', color: 'primary.main' }}>
-                                    Excel to PDF Cross-Referencer
+                                    Automated Reconciliation Platform
                                 </Typography>
                                 <Typography variant="subtitle1" color="text.secondary">
                                     Filter Excel rows, map specific columns, and automatically locate their exact matches in PDF layouts.
@@ -705,59 +724,65 @@
                                                                     }}
                                                                 >
                                                                     {/* Page Number Cell */}
-                                                                    <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#bbdefb' : (matchData ? '#e3f2fd' : '#ffffff'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
-                                                                        {matchData ? (
-                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                                Pg {matchData.pageNum}
-                                                                                <Icon name="maximize" size={14} />
-                                                                            </Box>
-                                                                        ) : '-'}
-                                                                    </TableCell>
+                                                            <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#bbdefb' : (matchData ? '#e3f2fd' : '#ffffff'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
+                                                                {matchData ? (
+                                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                        Pg {matchData.pageNum}
+                                                                        <Icon name="maximize" size={14} />
+                                                                    </Box>
+                                                                ) : '-'}
+                                                            </TableCell>
 
                                                                     {/* Data Cells */}
                                                                     {displayColumns.map((col) => {
-                                                                        let cellValue = '';
-                                                                        if (col.isOriginal) {
-                                                                            cellValue = row[col.id] || '';
-                                                                        } else if (col.isComputed) {
-                                                                            cellValue = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
-                                                                        }
-                                                                        const isError = cellValue === '#ERROR';
-                                                                        
-                                                                        return (
-                                                                            <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? '#e8f5e9' : 'inherit', color: isError ? 'error.main' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
-                                                                                <Tooltip title={cellValue} placement="top-start" arrow disableInteractive>
-                                                                                    <span>{cellValue}</span>
-                                                                                </Tooltip>
-                                                                            </TableCell>
-                                                                        );
-                                                                    })}
-                                                                </TableRow>
-                                                            );
-                                                        })}
-                                                        {filteredRows.length === 0 && (
-                                                            <TableRow><TableCell colSpan={headers.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>
-                                                        )}
-                                                    </TableBody>
-                                                </Table>
-                                            </TableContainer>
-                                        </Paper>
-                                    </Grid>
-                                    
-                                    <Grid item xs={12} lg={5}>
-                                        <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1, justifyContent: 'space-between' }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                    <Icon name="file-text" size={24} color="#1976d2" />
-                                                    <Typography variant="h6">PDF Match Preview</Typography>
-                                                </Box>
-                                            </Box>
-                                            <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} />
-                                        </Paper>
-                                    </Grid>
-                                </Grid>
-                            )}
-                        </Container>
+                              let cellValue = '';
+                              if (col.isOriginal) {
+                                cellValue = row[col.id] || '';
+                              } else if (col.isComputed) {
+                                const resultArr = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
+                                cellValue = Array.isArray(resultArr) ? resultArr.join('  OR  ') : resultArr;
+                              }
+                              const isError = cellValue === '#ERROR';
+                              
+                              return (
+                                <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? '#e3f2fd' : 'inherit', color: isError ? '#d32f2f' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
+                                  <Tooltip title={cellValue} placement="top-start" arrow disableInteractive>
+                                      <span>{cellValue}</span>
+                                  </Tooltip>
+                                </TableCell>
+                                );
+                              })}
+                            </TableRow>
+                          );
+                        })}
+                        {filteredRows.length === 0 && (
+                          <TableRow><TableCell colSpan={headers.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              </Grid>
+              
+              {/* PDF Previewer Column */}
+              <Grid item xs={12} lg={5}>
+                <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
+                  <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Icon name="file-text" size={24} style={{ color: theme.palette.secondary.main }} />
+                    <Typography variant="h6">PDF Match Preview</Typography>
+                  </Box>
+                  <PdfViewer 
+                    pdfData={pdfData} 
+                    matches={matches}
+                    activeMatchRowId={activeMatchRowId}
+                  />
+                </Paper>
+              </Grid>
+
+            </Grid>
+          )}
+
+        </Container>
                         
                         <Dialog open={isModuleManagerOpen} onClose={() => setIsModuleManagerOpen(false)} maxWidth="sm" fullWidth>
                             <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -774,7 +799,7 @@
                                 <Typography variant="subtitle2" gutterBottom>Saved Modules</Typography>
                                 <List sx={{ mb: 3, border: '1px solid #eee', borderRadius: 1, bgcolor: 'background.paper', maxHeight: 200, overflow: 'auto' }}>
                                     {modules.map((mod) => (
-                                        <ListItem key={mod.id} secondaryAction={!mod.id.startsWith('mod_') || mod.id.includes('custom') ? (<IconButton edge="end" onClick={() => deleteModule(mod.id)}><Icon name="trash-2" size={16} color="#d32f2f" /></IconButton>) : null}>
+                                        <ListItem key={mod.id} secondaryAction={<IconButton edge="end" onClick={() => deleteModule(mod.id)}><Icon name="trash-2" size={16} color="#d32f2f" /></IconButton>}>
                                             <ListItemText primary={mod.name} secondary={<Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{mod.code}</Typography>} />
                                         </ListItem>
                                     ))}
