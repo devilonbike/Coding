@@ -1,0 +1,34 @@
+/**
+  date to multiple dates
+*/
+  
+  // Array to map month numbers to 3-letter strings (and vice versa)
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  
+  // 1. Split the DD-MMM-YY string into its parts
+  const [dayStr, monthStr, yearStr] = value.split('-');
+  
+  // 2. Find the numerical index of the month (0-11)
+  // .toLowerCase() makes it case-insensitive so "APR", "Apr", or "apr" all work
+  const monthIndex = monthNames.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
+  
+  // 3. Build the valid date (adding 2000 to the 2-digit year)
+  const baseDate = new Date(2000 + parseInt(yearStr), monthIndex, parseInt(dayStr));
+  
+  const result = [];
+  
+  // 4. Loop from -5 to +5 days
+  for (let i = -5; i <= 5; i++) {
+    const currentDate = new Date(baseDate);
+    currentDate.setDate(baseDate.getDate() + i);
+  
+    // 5. Format the output back to DD-MMM-YY
+    const d = String(currentDate.getDate()).padStart(2, '0');
+    const m = monthNames[currentDate.getMonth()]; // Get the 3-letter string back
+    const y = String(currentDate.getFullYear()).slice(-2);
+  
+    result.push(`${d}-${m}-${y}`);
+  }
+  
+  return result;
+  
