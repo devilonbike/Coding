@@ -17,6 +17,9 @@
     
     <!-- Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- PDF Lib for Drawing Rectangles -->
+    <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
 
     <style>
         body { margin: 0; padding: 0; background-color: #f4f6f8; font-family: 'Roboto', sans-serif; }
@@ -30,7 +33,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // Safe robust icon wrapper that correctly formats names to hyphen-case for Lucide
+        // Wrapper component to instantiate Lucide icons in a browser-only environment
         const Icon = ({ name, size = 24, color = 'currentColor', ...props }) => {
             const iconRef = React.useRef(null);
             React.useEffect(() => {
@@ -49,7 +52,7 @@
             Chip, createTheme, ThemeProvider, CssBaseline, Box, Container, Typography,
             Paper, Grid, Button, IconButton, FormControl, TextField, CircularProgress,
             TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Tooltip,
-            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem
+            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, Divider
         } = MaterialUI;
 
         const theme = createTheme({
@@ -203,22 +206,6 @@
             return { selectedHeaderIds, handleHeaderSelectionChange, headerPipelines, addModuleToPipeline, removeModuleFromPipeline };
         };
 
-        const usePdfUploader = (pdfLoaded) => {
-            const [pdfData, setPdfData] = useState(null);
-            const [pdfFileName, setPdfFileName] = useState('');
-            const [error, setError] = useState(null);
-            const handlePdfUpload = useCallback(async (event) => {
-                if (!pdfLoaded || !window.pdfjsLib) return setError("PDF library not loaded.");
-                const file = event.target.files[0];
-                if (!file) return;
-                setError(null); setPdfFileName(file.name); setPdfData(null);
-                try { setPdfData(await file.arrayBuffer()); } catch (err) { setError("Failed to read PDF."); setPdfFileName(''); } finally { if (event.target) event.target.value = null; }
-            }, [pdfLoaded]);
-            const resetPdfUpload = useCallback(() => { setPdfData(null); setPdfFileName(''); setError(null); }, []);
-            return { pdfData, pdfFileName, error, handlePdfUpload, resetPdfUpload, setError };
-        };
-
-        /* 1-to-MANY ARRAY EVALUATION */
         const evaluatePipeline = (val, pipelineModuleIds, allModules) => {
             if (!pipelineModuleIds || pipelineModuleIds.length === 0) return [String(val || '').trim()];
             let currentVals = [String(val || '').trim()];
@@ -238,12 +225,28 @@
                             nextVals.push(String(result !== undefined && result !== null ? result : '').trim());
                         }
                     }
+                    // Filter duplicates and empties
                     currentVals = [...new Set(nextVals.filter(v => v !== ''))];
                 } catch (e) {
                     return ['#ERROR'];
                 }
             }
             return currentVals.length > 0 ? currentVals : [''];
+        };
+
+        const usePdfUploader = (pdfLoaded) => {
+            const [pdfData, setPdfData] = useState(null);
+            const [pdfFileName, setPdfFileName] = useState('');
+            const [error, setError] = useState(null);
+            const handlePdfUpload = useCallback(async (event) => {
+                if (!pdfLoaded || !window.pdfjsLib) return setError("PDF library not loaded.");
+                const file = event.target.files[0];
+                if (!file) return;
+                setError(null); setPdfFileName(file.name); setPdfData(null);
+                try { setPdfData(await file.arrayBuffer()); } catch (err) { setError("Failed to read PDF."); setPdfFileName(''); } finally { if (event.target) event.target.value = null; }
+            }, [pdfLoaded]);
+            const resetPdfUpload = useCallback(() => { setPdfData(null); setPdfFileName(''); setError(null); }, []);
+            return { pdfData, pdfFileName, error, handlePdfUpload, resetPdfUpload, setError };
         };
 
         const usePdfMatcher = () => {
@@ -254,7 +257,7 @@
 
             const runMatching = async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, allModules) => {
                 if (!pdfData || !filteredRows.length || !selectedHeaderIds.length || !window.pdfjsLib) return;
-                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing...');
+                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing scanner...');
                 try {
                     const dataCopy = pdfData.slice(0);
                     const doc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
@@ -264,7 +267,7 @@
 
                     setStatusText(`Scanning ${numPages} Pages concurrently...`);
                     
-                    /* PARALLEL PAGE SCANNING */
+                    // Scan all pages in parallel for speed
                     const pagePromises = Array.from({ length: numPages }, async (_, index) => {
                       const i = index + 1;
                       const page = await doc.getPage(i);
@@ -280,6 +283,7 @@
                           const h = item.height || 12;
                           const [x0, y0] = viewport.convertToViewportPoint(tx, ty + h);
                           const [x1, y1] = viewport.convertToViewportPoint(tx + w, ty);
+                          
                           const line = lines.find(l => Math.abs(l.y - y1) < 5);
                           const mappedItem = { text: item.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
                           if (line) {
@@ -302,11 +306,10 @@
                     });
 
                     const pageTexts = await Promise.all(pagePromises);
-                    setStatusText('Cross-referencing strictly by row...');
+                    setStatusText('Cross-referencing logic (AND of ORs)...');
                     let processedRows = 0;
                     
                     for (const row of filteredRows) {
-                        // ARRAY MATCHING LOGIC (OR condition inside groups)
                         const searchGroups = selectedHeaderIds.map(id => {
                             const rawVal = row[id];
                             const pipeline = headerPipelines[id] || [];
@@ -315,6 +318,7 @@
                         }).filter(group => group.length > 0); 
 
                         const hasStrongTarget = searchGroups.some(group => group.some(t => t.replace(/\s+/g, '').length > 3));
+                        
                         if (searchGroups.length > 0 && hasStrongTarget) {
                             let foundMatch = null;
                             for (const { pageNumber, lines } of pageTexts) {
@@ -336,12 +340,13 @@
                         setProgress(50 + Math.round((processedRows / filteredRows.length) * 50));
                     }
                     setMatches(newMatches);
-                } catch (err) { console.error(err); } finally { setIsMatching(false); setProgress(100); setStatusText(''); }
+                    setStatusText(`Reconciliation complete: ${Object.keys(newMatches).length} of ${filteredRows.length} rows matched.`);
+                } catch (err) { console.error(err); setStatusText("Error during scanning."); } finally { setIsMatching(false); setProgress(100); }
             };
             return { runMatching, isMatching, matches, progress, statusText };
         };
 
-        const PdfPage = ({ doc, pageNum, highlights, activeRowId }) => {
+        const PdfPage = ({ doc, pageNum, highlights, activeRowId, zoom }) => {
             const canvasRef = useRef(null);
             const containerRef = useRef(null);
             const [renderData, setRenderData] = useState(null);
@@ -352,15 +357,15 @@
                     if (!doc || !canvasRef.current) return;
                     try {
                         const page = await doc.getPage(pageNum);
-                        const scale = 1.2; 
-                        const viewport = page.getViewport({ scale });
+                        const baseScale = 2.0; 
+                        const viewport = page.getViewport({ scale: baseScale });
                         const canvas = canvasRef.current;
                         const context = canvas.getContext('2d');
                         canvas.height = viewport.height;
                         canvas.width = viewport.width;
                         renderTask = page.render({ canvasContext: context, viewport });
                         await renderTask.promise;
-                        setRenderData({ viewport, scale });
+                        setRenderData({ viewport, baseScale });
                     } catch (err) { if (err.name !== 'RenderingCancelledException') console.error(err); }
                 };
                 renderPage();
@@ -373,13 +378,20 @@
                 }
             }, [activeRowId, highlights]);
 
+            const displayScale = 1.0 * zoom; 
+            let cssWidth = 'auto', cssHeight = 'auto';
+            
+            if (renderData) {
+                cssWidth = `${(renderData.viewport.width / renderData.baseScale) * displayScale}px`;
+                cssHeight = `${(renderData.viewport.height / renderData.baseScale) * displayScale}px`;
+            }
+
             return (
-                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, boxShadow: 3, bgcolor: 'white', mx: 'auto', width: 'max-content' }}>
-                    <canvas ref={canvasRef} style={{ display: 'block' }} />
+                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, boxShadow: 3, bgcolor: 'white', width: cssWidth, height: cssHeight }}>
+                    <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
                     {renderData && highlights?.map((hl, idx) => {
-                        const { scale } = renderData;
                         const { x, y, w, h, sourceScale } = hl.boundingBox;
-                        const ratio = scale / sourceScale;
+                        const ratio = displayScale / sourceScale;
                         const isActive = hl.rowId === activeRowId;
                         return (
                             <div key={idx} style={{
@@ -397,9 +409,15 @@
             );
         };
 
-        const PdfViewer = ({ pdfData, matches, activeMatchRowId }) => {
+        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf }) => {
             const [doc, setDoc] = useState(null);
             const [numPages, setNumPages] = useState(0);
+            const [zoom, setZoom] = useState(1);
+            const [isPanning, setIsPanning] = useState(false);
+            const containerRef = useRef(null);
+            const isDragging = useRef(false);
+            const startPos = useRef({ x: 0, y: 0 });
+            const scrollPos = useRef({ left: 0, top: 0 });
 
             useEffect(() => {
                 const loadPdf = async () => {
@@ -422,21 +440,118 @@
                 return map;
             }, [matches]);
 
-            if (!pdfData) return <Typography color="text.secondary">No PDF uploaded</Typography>;
+            const handleMouseDown = (e) => {
+                if (!isPanning || !containerRef.current) return;
+                isDragging.current = true;
+                startPos.current = { x: e.clientX, y: e.clientY };
+                scrollPos.current = { left: containerRef.current.scrollLeft, top: containerRef.current.scrollTop };
+                containerRef.current.style.cursor = 'grabbing';
+            };
+            const handleMouseMove = (e) => {
+                if (!isDragging.current || !isPanning || !containerRef.current) return;
+                const dx = e.clientX - startPos.current.x;
+                const dy = e.clientY - startPos.current.y;
+                containerRef.current.scrollLeft = scrollPos.current.left - dx;
+                containerRef.current.scrollTop = scrollPos.current.top - dy;
+            };
+            const handleMouseUpOrLeave = () => {
+                if (isDragging.current) {
+                    isDragging.current = false;
+                    if (containerRef.current) containerRef.current.style.cursor = isPanning ? 'grab' : 'auto';
+                }
+            };
+
+            if (!pdfData) return <Typography color="text.secondary" sx={{ p: 2 }}>No PDF uploaded</Typography>;
             if (numPages === 0) return <CircularProgress size={24} sx={{ display: 'block', margin: 'auto', mt: 4 }} />;
 
             return (
-                <Box sx={{ overflow: 'auto', maxHeight: '70vh', border: '1px solid #ddd', borderRadius: 1, bgcolor: '#9e9e9e', p: 2 }}>
-                    {Array.from({ length: numPages }).map((_, i) => (
-                        <PdfPage key={i + 1} doc={doc} pageNum={i + 1} highlights={highlightsByPage[i + 1] || []} activeRowId={activeMatchRowId} />
-                    ))}
+                <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+                    <Box sx={{ display: 'flex', gap: 1, p: 1, borderBottom: '1px solid #ddd', bgcolor: '#f5f5f5', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <IconButton size="small" onClick={() => setZoom(z => Math.max(0.5, z - 0.2))} title="Zoom Out"><Icon name="zoom-out" size={18} /></IconButton>
+                        <Typography variant="body2" sx={{ minWidth: 40, textAlign: 'center' }}>{Math.round(zoom * 100)}%</Typography>
+                        <IconButton size="small" onClick={() => setZoom(z => Math.min(3, z + 0.2))} title="Zoom In"><Icon name="zoom-in" size={18} /></IconButton>
+                        <IconButton size="small" onClick={() => setZoom(1)} title="Reset Zoom"><Icon name="refresh-ccw" size={16} /></IconButton>
+                        <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+                        <Button size="small" variant={isPanning ? "contained" : "outlined"} onClick={() => setIsPanning(!isPanning)} startIcon={<Icon name={isPanning ? 'hand' : 'mouse-pointer'} size={16} />}>
+                            Pan
+                        </Button>
+                        <Box sx={{ flexGrow: 1 }} />
+                        <Button size="small" variant="contained" color="secondary" onClick={exportPdf} startIcon={<Icon name="save" size={16} />} disabled={Object.keys(matches).length === 0}>
+                            Save PDF
+                        </Button>
+                    </Box>
+
+                    <Box 
+                        ref={containerRef}
+                        onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUpOrLeave} onMouseLeave={handleMouseUpOrLeave}
+                        sx={{ 
+                            flexGrow: 1, overflow: 'auto', bgcolor: '#9e9e9e', p: 2, 
+                            display: 'flex', flexDirection: 'column', alignItems: 'center',
+                            cursor: isPanning ? 'grab' : 'auto', userSelect: isPanning ? 'none' : 'auto'
+                        }}
+                    >
+                        {Array.from({ length: numPages }).map((_, i) => (
+                            <PdfPage key={i + 1} doc={doc} pageNum={i + 1} zoom={zoom} highlights={highlightsByPage[i + 1] || []} activeRowId={activeMatchRowId} />
+                        ))}
+                    </Box>
                 </Box>
             );
         };
 
+        const ModuleManagerDialog = ({ open, onClose, modules, addModule, deleteModule, exportModules, importModules }) => {
+            const [newModuleName, setNewModuleName] = useState('');
+            const [newModuleCode, setNewModuleCode] = useState('return value;');
+            const moduleImportRef = useRef(null);
+            const localTheme = createTheme({ palette: { error: { main: '#d32f2f' } } });
+
+            return (
+                <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+                    <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        Manage Formatting Modules
+                        <IconButton onClick={onClose} size="small"><Icon name="x" /></IconButton>
+                    </DialogTitle>
+                    <DialogContent dividers>
+                        <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+                            <Button variant="outlined" startIcon={<Icon name="download" size={16} />} onClick={exportModules} fullWidth>Export</Button>
+                            <input type="file" accept=".json" style={{ display: 'none' }} ref={moduleImportRef} onChange={importModules} />
+                            <Button variant="outlined" startIcon={<Icon name="upload-cloud" size={16} />} onClick={() => moduleImportRef.current?.click()} fullWidth>Import</Button>
+                        </Box>
+                        
+                        <Typography variant="subtitle2" gutterBottom>Saved Modules</Typography>
+                        <List sx={{ mb: 3, border: '1px solid #eee', borderRadius: 1, bgcolor: 'background.paper', maxHeight: 200, overflow: 'auto' }}>
+                            {modules.map((mod) => (
+                                <ListItem key={mod.id} sx={{ pr: 7 }} secondaryAction={
+                                    <IconButton edge="end" aria-label="delete" onClick={() => deleteModule(mod.id)}>
+                                        <Icon name="trash-2" size={16} color={localTheme.palette.error.main} />
+                                    </IconButton>
+                                }>
+                                    <ListItemText 
+                                        primary={mod.name} 
+                                        secondary={<Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{mod.code}</Typography>} 
+                                    />
+                                </ListItem>
+                            ))}
+                        </List>
+
+                        <Typography variant="subtitle2" gutterBottom>Create New Custom Module</Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2, bgcolor: 'grey.50', borderRadius: 1, border: '1px dashed #ccc' }}>
+                            <TextField label="Module Name" size="small" fullWidth placeholder="e.g. Extract Year" value={newModuleName} onChange={(e) => setNewModuleName(e.target.value)} />
+                            <TextField label="JavaScript Code" size="small" fullWidth multiline rows={3} placeholder="return value;" value={newModuleCode} onChange={(e) => setNewModuleCode(e.target.value)} helperText="Input variable is `value`. Can return a string or an array of strings." sx={{ fontFamily: 'monospace' }} />
+                            <Button variant="contained" startIcon={<Icon name="plus" size={16} />} onClick={() => { addModule({ name: newModuleName, code: newModuleCode }); setNewModuleName(''); setNewModuleCode('return value;'); }} disabled={!newModuleName || !newModuleCode}>
+                                Add Module
+                            </Button>
+                        </Box>
+                    </DialogContent>
+                    <DialogActions><Button onClick={onClose}>Close</Button></DialogActions>
+                </Dialog>
+            );
+        };
+
         function App() {
+            // Using precise, unbroken CDN strings
             const { loaded: xlsxLoaded, error: xlsxError } = useScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
             const { loaded: pdfLoaded, error: pdfJsError } = useScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+            useScript('https://unpkg.com/pdf-lib/dist/pdf-lib.min.js');
 
             useEffect(() => {
                 if (pdfLoaded && window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -452,14 +567,11 @@
             const { modules, addModule, deleteModule, exportModules, importModules } = useFormattingModules();
             const { selectedHeaderIds, handleHeaderSelectionChange, headerPipelines, addModuleToPipeline, removeModuleFromPipeline } = useHeaderSelection();
             const [isModuleManagerOpen, setIsModuleManagerOpen] = useState(false);
-            const [newModuleName, setNewModuleName] = useState('');
-            const [newModuleCode, setNewModuleCode] = useState('return value;');
-            const moduleImportRef = useRef(null);
 
             const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, error: pdfUploadError } = usePdfUploader(pdfLoaded);
             const { runMatching, isMatching, matches, progress, statusText } = usePdfMatcher();
 
-            /* DYNAMIC COLUMN GENERATION: Evaluate pipelines to build distinct Var 1, Var 2 columns */
+            // Dynamically calculate distinct columns based on max array length returned by pipelines
             const displayColumns = useMemo(() => {
                 const cols = [];
                 const maxVariations = {};
@@ -481,7 +593,6 @@
 
                 headers.forEach(header => {
                     cols.push({ ...header, isOriginal: true });
-                    
                     if (selectedHeaderIds.includes(header.id)) {
                         const count = maxVariations[header.id] || 1;
                         for (let i = 0; i < count; i++) {
@@ -513,7 +624,67 @@
 
             useEffect(() => { setFilters({}); setActiveMatchRowId(null); }, [selectedSheet, customRange]);
 
-            const activeError = uploadError || sheetError || pdfUploadError || (xlsxError ? "Excel library failed." : null) || (pdfJsError ? "PDF library failed." : null);
+            const handleExportExcel = () => {
+                if (!window.XLSX || filteredRows.length === 0) return;
+                
+                const exportData = filteredRows.map(row => {
+                    const rowData = {};
+                    const matchData = matches[row.id];
+                    rowData['PDF Match Page'] = matchData ? `Page ${matchData.pageNum}` : 'Not Found';
+                    
+                    displayColumns.forEach(col => {
+                        if (col.isOriginal) {
+                            rowData[col.label] = row[col.id] || '';
+                        } else if (col.isComputed) {
+                            const computedResults = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
+                            const arr = Array.isArray(computedResults) ? computedResults : [computedResults];
+                            rowData[col.label] = String(arr[col.variationIndex] !== undefined && arr[col.variationIndex] !== null ? arr[col.variationIndex] : '');
+                        }
+                    });
+                    return rowData;
+                });
+
+                const worksheet = window.XLSX.utils.json_to_sheet(exportData);
+                const workbook = window.XLSX.utils.book_new();
+                window.XLSX.utils.book_append_sheet(workbook, worksheet, "Reconciliation Results");
+                window.XLSX.writeFile(workbook, "Reconciliation_Results.xlsx");
+            };
+
+            const handleExportPdf = async () => {
+                if (!pdfData || !window.PDFLib) return;
+                try {
+                    const { PDFDocument, rgb } = window.PDFLib;
+                    const pdfDoc = await PDFDocument.load(pdfData);
+                    const pages = pdfDoc.getPages();
+                    
+                    Object.values(matches).forEach(match => {
+                        const page = pages[match.pageNum - 1];
+                        if (!page) return;
+                        const { height } = page.getSize();
+                        const { x, y, w, h, sourceScale } = match.boundingBox;
+                        
+                        const pdfX = x / sourceScale;
+                        const pdfW = w / sourceScale;
+                        const pdfH = h / sourceScale;
+                        const pdfY = height - (y / sourceScale) - pdfH;
+                        
+                        page.drawRectangle({
+                            x: pdfX, y: pdfY, width: pdfW, height: pdfH,
+                            borderColor: rgb(1, 0.2, 0.2), borderWidth: 1.5,
+                            color: rgb(1, 0.2, 0.2), opacity: 0.1, borderOpacity: 0.8
+                        });
+                    });
+                    
+                    const pdfBytes = await pdfDoc.save();
+                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = 'Reconciliation_Matches.pdf';
+                    link.click();
+                } catch(err) { console.error("Failed to export PDF", err); }
+            };
+
+            const activeError = uploadError || sheetError || pdfUploadError || (xlsxError ? "Excel library failed." : null) || (pdfJsError ? "PDF library failed." : null) || (pdfData && !window.PDFLib ? "PDF-Lib not loaded yet." : null);
 
             return (
                 <ThemeProvider theme={theme}>
@@ -634,24 +805,35 @@
                                                 color="primary" 
                                                 fullWidth 
                                                 size="large"
-                                                startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="search" />}
+                                                startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="settings" />}
                                                 onClick={() => runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules)}
                                                 disabled={isMatching || !pdfData || selectedHeaderIds.length === 0 || filteredRows.length === 0}
                                             >
-                                                {isMatching ? `${statusText} (${progress}%)` : 'Run Strict Row Match'}
+                                                {isMatching ? `Scanning... (${progress}%)` : 'Reconcile'}
                                             </Button>
+                                            {statusText && !isMatching && (
+                                                <Typography variant="body2" color="success.main" sx={{ textAlign: 'center', fontWeight: 'bold' }}>
+                                                    {statusText}
+                                                </Typography>
+                                            )}
                                         </Box>
                                     </Grid>
                                 </Grid>
                             </Paper>
 
+                            {/* Data Grid & PDF Viewer */}
                             {selectedSheet && headers.length > 0 && (
                                 <Grid container spacing={3}>
                                     <Grid item xs={12} lg={7}>
                                         <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                <Icon name="filter" size={24} color="#2e7d32" />
-                                                <Typography variant="h6">Data Grid ({filteredRows.length} rows)</Typography>
+                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                    <Icon name="filter" size={24} color="#2e7d32" />
+                                                    <Typography variant="h6">Data Grid ({filteredRows.length} rows)</Typography>
+                                                </Box>
+                                                <Button size="small" variant="outlined" color="primary" startIcon={<Icon name="download" size={16} />} onClick={handleExportExcel} disabled={filteredRows.length === 0}>
+                                                    Export Data
+                                                </Button>
                                             </Box>
 
                                             <TableContainer component={Box} sx={{ flexGrow: 1, maxHeight: '65vh', overflowX: 'auto', border: '1px solid #e0e0e0' }}>
@@ -683,9 +865,8 @@
                                                         {filteredRows.map((row) => {
                                                             const matchData = matches[row.id];
                                                             const isSelected = activeMatchRowId === row.id;
-
-                                                            // OPTIMIZATION: Pre-calculate the pipeline results for this exact row 
-                                                            // so we don't duplicate processing per variation column cell
+                                                            
+                                                            // Pre-calculate pipelines for this row so columns can just read the index
                                                             const computedResults = {};
                                                             selectedHeaderIds.forEach(id => {
                                                                 computedResults[id] = evaluatePipeline(row[id], headerPipelines[id], modules);
@@ -706,7 +887,6 @@
                                                                         if (col.isOriginal) {
                                                                             cellValue = row[col.id] || '';
                                                                         } else if (col.isComputed) {
-                                                                            // Retrieve correct variation value based on its specific array index
                                                                             const resultArr = computedResults[col.originalId];
                                                                             const arr = Array.isArray(resultArr) ? resultArr : [resultArr];
                                                                             cellValue = String(arr[col.variationIndex] !== undefined && arr[col.variationIndex] !== null ? arr[col.variationIndex] : '');
@@ -734,57 +914,23 @@
                                     </Grid>
                                     
                                     <Grid item xs={12} lg={5}>
-                                        <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                <Icon name="file-text" size={24} color="#1976d2" />
-                                                <Typography variant="h6">PDF Match Preview</Typography>
-                                            </Box>
-                                            <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} />
+                                        <Paper sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #ddd' }}>
+                                            <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} exportPdf={handleExportPdf} />
                                         </Paper>
                                     </Grid>
                                 </Grid>
                             )}
                         </Container>
                                         
-                        <Dialog open={isModuleManagerOpen} onClose={() => setIsModuleManagerOpen(false)} maxWidth="sm" fullWidth>
-                            <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                Manage Formatting Modules
-                                <IconButton onClick={() => setIsModuleManagerOpen(false)} size="small"><Icon name="x" /></IconButton>
-                            </DialogTitle>
-                            <DialogContent dividers>
-                                <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
-                                    <Button variant="outlined" startIcon={<Icon name="download" size={16} />} onClick={exportModules} fullWidth>Export</Button>
-                                    <input type="file" accept=".json" style={{ display: 'none' }} ref={moduleImportRef} onChange={importModules} />
-                                    <Button variant="outlined" startIcon={<Icon name="upload-cloud" size={16} />} onClick={() => moduleImportRef.current?.click()} fullWidth>Import</Button>
-                                </Box>
-                                
-                                <Typography variant="subtitle2" gutterBottom>Saved Modules</Typography>
-                                <List sx={{ mb: 3, border: '1px solid #eee', borderRadius: 1, bgcolor: 'background.paper', maxHeight: 200, overflow: 'auto' }}>
-                                    {modules.map((mod) => (
-                                        <ListItem key={mod.id} sx={{ pr: 7 }} secondaryAction={
-                                            <IconButton edge="end" aria-label="delete" onClick={() => deleteModule(mod.id)}>
-                                                <Icon name="trash-2" size={16} color={theme.palette.error.main} />
-                                            </IconButton>
-                                        }>
-                                            <ListItemText 
-                                                primary={mod.name} 
-                                                secondary={<Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{mod.code}</Typography>} 
-                                            />
-                                        </ListItem>
-                                    ))}
-                                </List>
-
-                                <Typography variant="subtitle2" gutterBottom>Create New Custom Module</Typography>
-                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2, bgcolor: 'grey.50', borderRadius: 1, border: '1px dashed #ccc' }}>
-                                    <TextField label="Module Name" size="small" fullWidth placeholder="e.g. Extract Year" value={newModuleName} onChange={(e) => setNewModuleName(e.target.value)} />
-                                    <TextField label="JavaScript Code" size="small" fullWidth multiline rows={3} placeholder="return value;" value={newModuleCode} onChange={(e) => setNewModuleCode(e.target.value)} helperText="Input variable is `value`. Must return a string or an array of strings." sx={{ fontFamily: 'monospace' }} />
-                                    <Button variant="contained" startIcon={<Icon name="plus" size={16} />} onClick={() => { addModule({ name: newModuleName, code: newModuleCode }); setNewModuleName(''); setNewModuleCode('return value;'); }} disabled={!newModuleName || !newModuleCode}>
-                                        Add Module
-                                    </Button>
-                                </Box>
-                            </DialogContent>
-                            <DialogActions><Button onClick={() => setIsModuleManagerOpen(false)}>Close</Button></DialogActions>
-                        </Dialog>
+                        <ModuleManagerDialog
+                            open={isModuleManagerOpen}
+                            onClose={() => setIsModuleManagerOpen(false)}
+                            modules={modules}
+                            addModule={addModule}
+                            deleteModule={deleteModule}
+                            exportModules={exportModules}
+                            importModules={importModules}
+                        />
                         <Snackbar open={!!activeError} autoHideDuration={6000} onClose={handleCloseError} message={activeError} action={<IconButton size="small" color="inherit" onClick={handleCloseError}><Icon name="x" size={20} /></IconButton>} />
                     </Box>
                 </ThemeProvider>
