@@ -30,13 +30,14 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // Lucide Icon Wrapper for React
+        // Safe robust icon wrapper that correctly formats names to hyphen-case for Lucide
         const Icon = ({ name, size = 24, color = 'currentColor', ...props }) => {
             const iconRef = React.useRef(null);
             React.useEffect(() => {
                 if (iconRef.current) {
-                    iconRef.current.innerHTML = '';
-                    lucide.createIcons({ icons: { [name]: lucide.icons[name] }, root: iconRef.current, attrs: { width: size, height: size, stroke: color } });
+                    const formattedName = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+                    iconRef.current.innerHTML = `<i data-lucide="${formattedName}"></i>`;
+                    lucide.createIcons({ root: iconRef.current, attrs: { width: size, height: size, stroke: color } });
                 }
             }, [name, size, color]);
             return <span ref={iconRef} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} {...props} />;
@@ -48,8 +49,7 @@
             Chip, createTheme, ThemeProvider, CssBaseline, Box, Container, Typography,
             Paper, Grid, Button, IconButton, FormControl, TextField, CircularProgress,
             TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Tooltip,
-            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem,
-            ListItemSecondaryAction, Divider
+            Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem
         } = MaterialUI;
 
         const theme = createTheme({
@@ -57,7 +57,6 @@
             typography: { fontFamily: 'Roboto, Arial, sans-serif' },
         });
 
-        // Modules
         const DEFAULT_MODULES = [
             { id: 'mod_1', name: 'Remove Symbols ($,)', code: 'return value.replace(/[$,]/g, "");' },
             { id: 'mod_2', name: 'Scale by 1000', code: 'const num = Number(value.replace(/[$,]/g, "")); return isNaN(num) ? value : (num / 1000).toString();' },
@@ -73,9 +72,12 @@
                     return saved ? JSON.parse(saved) : DEFAULT_MODULES;
                 } catch (e) { return DEFAULT_MODULES; }
             });
+            
             useEffect(() => { localStorage.setItem('pdf_matcher_modules', JSON.stringify(modules)); }, [modules]);
+            
             const addModule = (newModule) => setModules(prev => [...prev, { ...newModule, id: `mod_custom_${Date.now()}` }]);
             const deleteModule = (id) => setModules(prev => prev.filter(m => m.id !== id));
+            
             const exportModules = () => {
                 const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(modules));
                 const downloadAnchorNode = document.createElement('a');
@@ -83,6 +85,7 @@
                 downloadAnchorNode.setAttribute("download", "formatting_modules.json");
                 document.body.appendChild(downloadAnchorNode); downloadAnchorNode.click(); downloadAnchorNode.remove();
             };
+            
             const importModules = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
@@ -103,7 +106,6 @@
                 if (!url) return;
                 if (url.includes('xlsx') && window.XLSX) { setLoaded(true); return; }
                 if (url.includes('pdf.js') && window.pdfjsLib) { setLoaded(true); return; }
-                if (url.includes('pdf-lib') && window.PDFLib) { setLoaded(true); return; }
                 const script = document.createElement('script');
                 script.src = url; script.async = true;
                 script.onload = () => setLoaded(true);
@@ -120,6 +122,7 @@
             const [fileName, setFileName] = useState('');
             const [error, setError] = useState(null);
             const [loading, setLoading] = useState(false);
+            
             const handleFileUpload = useCallback(async (event) => {
                 if (!xlsxLoaded || !window.XLSX) { setError("Excel library not loaded."); return; }
                 const file = event.target.files[0];
@@ -132,6 +135,7 @@
                 } catch (err) { setError("Failed to read Excel file."); setFileName(''); } 
                 finally { setLoading(false); if (event.target) event.target.value = null; }
             }, [xlsxLoaded]);
+            
             const resetUpload = useCallback(() => { setWorkbook(null); setSheetNames([]); setFileName(''); setError(null); setLoading(false); }, []);
             return { workbook, sheetNames, fileName, error, loading, handleFileUpload, resetUpload, setError };
         };
@@ -142,6 +146,7 @@
             const [headers, setHeaders] = useState([]);
             const [rows, setRows] = useState([]);
             const [error, setError] = useState(null);
+            
             const extractDataFromRange = useCallback((sheet, rangeStr) => {
                 if (!window.XLSX) return { extractedHeaders: [], extractedRows: [] };
                 try {
@@ -213,9 +218,9 @@
             return { pdfData, pdfFileName, error, handlePdfUpload, resetPdfUpload, setError };
         };
 
+        /* 1-to-MANY ARRAY EVALUATION */
         const evaluatePipeline = (val, pipelineModuleIds, allModules) => {
             if (!pipelineModuleIds || pipelineModuleIds.length === 0) return [String(val || '').trim()];
-            
             let currentVals = [String(val || '').trim()];
             
             for (const modId of pipelineModuleIds) {
@@ -224,7 +229,6 @@
                 try {
                     const script = module.code.includes('return') ? module.code : `return ${module.code};`;
                     const fn = new Function('value', script);
-                    
                     let nextVals = [];
                     for (const currentVal of currentVals) {
                         const result = fn(currentVal);
@@ -239,7 +243,7 @@
                     return ['#ERROR'];
                 }
             }
-            return currentVals;
+            return currentVals.length > 0 ? currentVals : [''];
         };
 
         const usePdfMatcher = () => {
@@ -248,52 +252,61 @@
             const [progress, setProgress] = useState(0);
             const [statusText, setStatusText] = useState('');
 
-            const runMatching = useCallback(async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, allModules) => {
+            const runMatching = async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, allModules) => {
                 if (!pdfData || !filteredRows.length || !selectedHeaderIds.length || !window.pdfjsLib) return;
-                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Scanning PDF Lines...');
+                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing...');
                 try {
                     const dataCopy = pdfData.slice(0);
                     const doc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
                     const numPages = doc.numPages;
                     const newMatches = {};
-                    const pageTexts = [];
                     const SCALE = 2.0; 
 
-                    for (let i = 1; i <= numPages; i++) {
-                        const page = await doc.getPage(i);
-                        const textContent = await page.getTextContent();
-                        const viewport = page.getViewport({ scale: SCALE });
-                        const lines = [];
-                        
-                        textContent.items.forEach(item => {
-                            if (!item.str || !item.str.trim()) return; 
-                            const tx = item.transform[4]; const ty = item.transform[5];
-                            const w = item.width; const h = item.height || 12;
-                            const [x0, y0] = viewport.convertToViewportPoint(tx, ty + h);
-                            const [x1, y1] = viewport.convertToViewportPoint(tx + w, ty);
-                            const line = lines.find(l => Math.abs(l.y - y1) < 5);
-                            const mappedItem = { text: item.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
-                            if (line) {
-                                line.items.push(mappedItem);
-                                line.minY = Math.min(line.minY, mappedItem.y0); line.maxY = Math.max(line.maxY, mappedItem.y1);
-                                line.minX = Math.min(line.minX, mappedItem.x0); line.maxX = Math.max(line.maxX, mappedItem.x1);
-                            } else {
-                                lines.push({ y: y1, minY: mappedItem.y0, maxY: mappedItem.y1, minX: mappedItem.x0, maxX: mappedItem.x1, items: [mappedItem] });
-                            }
-                        });
-                        
-                        lines.forEach(l => {
-                            l.items.sort((a, b) => a.x0 - b.x0);
-                            l.fullText = l.items.map(i => i.text).join('').toLowerCase(); 
-                        });
-                        pageTexts.push({ pageNumber: i, lines });
-                        setProgress(Math.round((i / numPages) * 50));
-                    }
+                    setStatusText(`Scanning ${numPages} Pages concurrently...`);
+                    
+                    /* PARALLEL PAGE SCANNING */
+                    const pagePromises = Array.from({ length: numPages }, async (_, index) => {
+                      const i = index + 1;
+                      const page = await doc.getPage(i);
+                      const textContent = await page.getTextContent();
+                      const viewport = page.getViewport({ scale: SCALE });
+                      
+                      const lines = [];
+                      textContent.items.forEach(item => {
+                          if (!item.str || !item.str.trim()) return; 
+                          const tx = item.transform[4];
+                          const ty = item.transform[5];
+                          const w = item.width;
+                          const h = item.height || 12;
+                          const [x0, y0] = viewport.convertToViewportPoint(tx, ty + h);
+                          const [x1, y1] = viewport.convertToViewportPoint(tx + w, ty);
+                          const line = lines.find(l => Math.abs(l.y - y1) < 5);
+                          const mappedItem = { text: item.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
+                          if (line) {
+                              line.items.push(mappedItem);
+                              line.minY = Math.min(line.minY, mappedItem.y0);
+                              line.maxY = Math.max(line.maxY, mappedItem.y1);
+                              line.minX = Math.min(line.minX, mappedItem.x0);
+                              line.maxX = Math.max(line.maxX, mappedItem.x1);
+                          } else {
+                              lines.push({ y: y1, minY: mappedItem.y0, maxY: mappedItem.y1, minX: mappedItem.x0, maxX: mappedItem.x1, items: [mappedItem] });
+                          }
+                      });
+                      
+                      lines.forEach(l => {
+                          l.items.sort((a, b) => a.x0 - b.x0);
+                          l.fullText = l.items.map(i => i.text).join('').toLowerCase(); 
+                      });
+                      setProgress(prev => Math.min(50, prev + Math.round(50 / numPages)));
+                      return { pageNumber: i, lines };
+                    });
 
-                    setStatusText('Applying Strict Row Matching...');
+                    const pageTexts = await Promise.all(pagePromises);
+                    setStatusText('Cross-referencing strictly by row...');
                     let processedRows = 0;
                     
                     for (const row of filteredRows) {
+                        // ARRAY MATCHING LOGIC (OR condition inside groups)
                         const searchGroups = selectedHeaderIds.map(id => {
                             const rawVal = row[id];
                             const pipeline = headerPipelines[id] || [];
@@ -302,7 +315,6 @@
                         }).filter(group => group.length > 0); 
 
                         const hasStrongTarget = searchGroups.some(group => group.some(t => t.replace(/\s+/g, '').length > 3));
-
                         if (searchGroups.length > 0 && hasStrongTarget) {
                             let foundMatch = null;
                             for (const { pageNumber, lines } of pageTexts) {
@@ -311,7 +323,6 @@
                                     const allFound = searchGroups.every(group => 
                                         group.some(target => lineTextNoSpace.includes(target.replace(/\s+/g, '')))
                                     );
-
                                     if (allFound) {
                                         foundMatch = { pageNum: pageNumber, boundingBox: { x: line.minX - 4, y: line.minY - 4, w: (line.maxX - line.minX) + 8, h: (line.maxY - line.minY) + 8, sourceScale: SCALE } };
                                         break; 
@@ -326,7 +337,7 @@
                     }
                     setMatches(newMatches);
                 } catch (err) { console.error(err); } finally { setIsMatching(false); setProgress(100); setStatusText(''); }
-            }, []);
+            };
             return { runMatching, isMatching, matches, progress, statusText };
         };
 
@@ -355,7 +366,7 @@
                 renderPage();
                 return () => { if (renderTask) renderTask.cancel(); };
             }, [doc, pageNum]);
-            // Scroll this page into view if it contains the actively clicked highlight
+
             useEffect(() => {
                 if (activeRowId && highlights?.some(h => h.rowId === activeRowId)) {
                     containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -426,7 +437,6 @@
         function App() {
             const { loaded: xlsxLoaded, error: xlsxError } = useScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
             const { loaded: pdfLoaded, error: pdfJsError } = useScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
-            const { loaded: pdfLibLoaded } = useScript('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js');
 
             useEffect(() => {
                 if (pdfLoaded && window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -449,23 +459,45 @@
             const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, error: pdfUploadError } = usePdfUploader(pdfLoaded);
             const { runMatching, isMatching, matches, progress, statusText } = usePdfMatcher();
 
-            useEffect(() => {
-                if (pdfData && filteredRows.length > 0 && selectedHeaderIds.length > 0) {
-                    const timer = setTimeout(() => { runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules); }, 800);
-                    return () => clearTimeout(timer);
-                }
-            }, [pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules, runMatching]);
-
+            /* DYNAMIC COLUMN GENERATION: Evaluate pipelines to build distinct Var 1, Var 2 columns */
             const displayColumns = useMemo(() => {
                 const cols = [];
+                const maxVariations = {};
+                
+                selectedHeaderIds.forEach(id => {
+                    let maxLen = 1;
+                    const pipeline = headerPipelines[id] || [];
+                    if (pipeline.length > 0) {
+                        const rowsToScan = filteredRows.slice(0, 1000); 
+                        for (const row of rowsToScan) {
+                            const res = evaluatePipeline(row[id], pipeline, modules);
+                            if (Array.isArray(res) && res.length > maxLen) {
+                                maxLen = res.length;
+                            }
+                        }
+                    }
+                    maxVariations[id] = maxLen;
+                });
+
                 headers.forEach(header => {
                     cols.push({ ...header, isOriginal: true });
+                    
                     if (selectedHeaderIds.includes(header.id)) {
-                        cols.push({ ...header, id: `${header.id}_computed`, originalId: header.id, isComputed: true, label: `${header.label} (Formatted)` });
+                        const count = maxVariations[header.id] || 1;
+                        for (let i = 0; i < count; i++) {
+                            cols.push({ 
+                                ...header, 
+                                id: `${header.id}_computed_${i}`, 
+                                originalId: header.id, 
+                                isComputed: true, 
+                                variationIndex: i, 
+                                label: count > 1 ? `${header.label} (Var ${i + 1})` : `${header.label} (Formatted)` 
+                            });
+                        }
                     }
                 });
                 return cols;
-            }, [headers, selectedHeaderIds]);
+            }, [headers, selectedHeaderIds, headerPipelines, modules, filteredRows]);
 
             const [activeMatchRowId, setActiveMatchRowId] = useState(null); 
             const fileInputRef = useRef(null);
@@ -480,49 +512,6 @@
             }, [sheetNames]);
 
             useEffect(() => { setFilters({}); setActiveMatchRowId(null); }, [selectedSheet, customRange]);
-
-            const handleExportExcel = () => {
-                if (!window.XLSX || !filteredRows.length) return;
-                const exportData = filteredRows.map(row => {
-                    const rowData = {};
-                    headers.forEach(h => { rowData[h.label] = row[h.id]; });
-                    selectedHeaderIds.forEach(id => {
-                        const h = headers.find(h => h.id === id);
-                        if (h) rowData[`${h.label} (Formatted)`] = evaluatePipeline(row[id], headerPipelines[id], modules).join('  OR  ');
-                    });
-                    const match = matches[row.id];
-                    rowData['PDF Match Found'] = match ? `Yes (Page ${match.pageNum})` : 'No';
-                    return rowData;
-                });
-                const ws = window.XLSX.utils.json_to_sheet(exportData);
-                const wb = window.XLSX.utils.book_new();
-                window.XLSX.utils.book_append_sheet(wb, ws, "Matched Results");
-                window.XLSX.writeFile(wb, "Cross_Referenced_Data.xlsx");
-            };
-
-            const handleExportPdf = async () => {
-                if (!window.PDFLib || !pdfData || Object.keys(matches).length === 0) return;
-                try {
-                    const { PDFDocument, rgb } = window.PDFLib;
-                    const pdfDoc = await PDFDocument.load(pdfData);
-                    Object.values(matches).forEach(match => {
-                        const { pageNum, boundingBox } = match;
-                        const page = pdfDoc.getPage(pageNum - 1);
-                        const { height } = page.getSize();
-                        const { x, y, w, h, sourceScale } = boundingBox;
-                        page.drawRectangle({
-                            x: x / sourceScale, y: height - (y / sourceScale) - (h / sourceScale),
-                            width: w / sourceScale, height: h / sourceScale,
-                            borderColor: rgb(1, 0, 0), borderWidth: 2, color: rgb(1, 0, 0), opacity: 0.2, borderOpacity: 0.8
-                        });
-                    });
-                    const pdfBytes = await pdfDoc.save();
-                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-                    const link = document.createElement('a');
-                    link.href = URL.createObjectURL(blob); link.download = 'Annotated_Matches.pdf';
-                    document.body.appendChild(link); link.click(); document.body.removeChild(link);
-                } catch (err) { setUploadError('Failed to generate PDF.'); }
-            };
 
             const activeError = uploadError || sheetError || pdfUploadError || (xlsxError ? "Excel library failed." : null) || (pdfJsError ? "PDF library failed." : null);
 
@@ -551,8 +540,8 @@
                                                     {uploadLoading ? 'Uploading...' : 'Select Excel File'}
                                                 </Button>
                                             ) : (
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, border: '1px solid', borderColor: 'success.main', borderRadius: 1, bgcolor: 'success.50' }}>
-                                                    <Icon name="check-circle" color="green" />
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, border: '1px solid', borderColor: 'success.main', borderRadius: 1, bgcolor: '#e8f5e9' }}>
+                                                    <Icon name="check-circle" color="#4caf50" />
                                                     <Typography variant="body2" sx={{ flexGrow: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</Typography>
                                                     <IconButton size="small" onClick={resetUpload} color="error" title="Remove file"><Icon name="refresh-ccw" size={18} /></IconButton>
                                                 </Box>
@@ -584,7 +573,7 @@
                                                                                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
                                                                                     {currentPipeline.map((modId, index) => {
                                                                                         const mod = modules.find(m => m.id === modId);
-                                                                                        return <Chip key={`${modId}-${index}`} label={mod ? mod.name : 'Unknown Module'} size="small" color="primary" variant="outlined" onDelete={() => removeModuleFromPipeline(id, index)} />;
+                                                                                        return <Chip key={`${modId}-${index}`} label={mod ? mod.name : 'Unknown Module'} size="small" color="primary" variant="outlined" onDelete={() => removeModuleFromPipeline(id, index)} icon={<Icon name="arrow-down" size={12} />} />;
                                                                                     })}
                                                                                 </Box>
                                                                             )}
@@ -640,31 +629,17 @@
                                                 </Select>
                                             </FormControl>
 
-                                            <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, minHeight: 24 }}>
-                                                    {isMatching ? (
-                                                        <><CircularProgress size={16} /><Typography variant="body2" color="text.secondary">{statusText} ({progress}%)</Typography></>
-                                                    ) : selectedHeaderIds.length > 0 && pdfData ? (
-                                                        <Typography variant="body2" color="success.main" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                            <Icon name="check-circle" size={16} /> Live matching active. Found {Object.keys(matches).length} exact row matches.
-                                                        </Typography>
-                                                    ) : (
-                                                        <Typography variant="body2" color="text.secondary">Select columns and upload PDF to begin live matching.</Typography>
-                                                    )}
-                                                </Box>
-                                                <Grid container spacing={2}>
-                                                    <Grid item xs={6}>
-                                                        <Button variant="outlined" color="secondary" fullWidth startIcon={<Icon name="download" size={18} />} onClick={handleExportExcel} disabled={isMatching || Object.keys(matches).length === 0}>
-                                                            Export Data (Excel)
-                                                        </Button>
-                                                    </Grid>
-                                                    <Grid item xs={6}>
-                                                        <Button variant="outlined" color="primary" fullWidth startIcon={<Icon name="file-text" size={18} />} onClick={handleExportPdf} disabled={isMatching || Object.keys(matches).length === 0 || !pdfLibLoaded}>
-                                                            Save PDF (Highlighted)
-                                                        </Button>
-                                                    </Grid>
-                                                </Grid>
-                                            </Box>
+                                            <Button 
+                                                variant="contained" 
+                                                color="primary" 
+                                                fullWidth 
+                                                size="large"
+                                                startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="search" />}
+                                                onClick={() => runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules)}
+                                                disabled={isMatching || !pdfData || selectedHeaderIds.length === 0 || filteredRows.length === 0}
+                                            >
+                                                {isMatching ? `${statusText} (${progress}%)` : 'Run Strict Row Match'}
+                                            </Button>
                                         </Box>
                                     </Grid>
                                 </Grid>
@@ -683,17 +658,14 @@
                                                 <Table stickyHeader size="small" aria-label="data table">
                                                     <TableHead>
                                                         <TableRow>
-                                                            {/* New Page Number Column */}
                                                             <TableCell sx={{ minWidth: 100, bgcolor: '#e3f2fd', borderRight: '2px solid #ddd', zIndex: 11, position: 'sticky', left: 0, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
                                                                 <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: 'secondary.main' }}>
                                                                     PDF Page
                                                                 </Typography>
                                                                 <Typography variant="caption" color="text.secondary">Matches found</Typography>
                                                             </TableCell>
-
-                                                            {/* Data & Live Preview Columns */}
                                                             {displayColumns.map((col) => (
-                                                                <TableCell key={col.id} sx={{ minWidth: col.isComputed ? 180 : 150, bgcolor: col.isComputed ? '#e8f5e9' : '#f5f5f5', verticalAlign: 'top', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
+                                                                <TableCell key={col.id} sx={{ minWidth: col.isComputed ? 180 : 150, bgcolor: col.isComputed ? '#e8f5e9' : '#ffffff', verticalAlign: 'top', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none', zIndex: 10 }}>
                                                                     <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: col.isComputed ? 'primary.dark' : 'inherit' }}>
                                                                         {col.label}
                                                                         {col.isComputed && <Chip size="small" label="Search Key" color="primary" sx={{ ml: 1, height: 16, fontSize: '0.6rem' }} />}
@@ -712,78 +684,68 @@
                                                             const matchData = matches[row.id];
                                                             const isSelected = activeMatchRowId === row.id;
 
+                                                            // OPTIMIZATION: Pre-calculate the pipeline results for this exact row 
+                                                            // so we don't duplicate processing per variation column cell
+                                                            const computedResults = {};
+                                                            selectedHeaderIds.forEach(id => {
+                                                                computedResults[id] = evaluatePipeline(row[id], headerPipelines[id], modules);
+                                                            });
+
                                                             return (
-                                                                <TableRow 
-                                                                    hover 
-                                                                    key={row.id} 
-                                                                    onClick={() => matchData && setActiveMatchRowId(row.id)}
-                                                                    sx={{ 
-                                                                        cursor: matchData ? 'pointer' : 'default',
-                                                                        bgcolor: isSelected ? '#e3f2fd' : 'inherit',
-                                                                        '&:hover': { bgcolor: matchData ? '#bbdefb' : 'action.hover' }
-                                                                    }}
-                                                                >
-                                                                    {/* Page Number Cell */}
-                                                            <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#bbdefb' : (matchData ? '#e3f2fd' : '#ffffff'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
-                                                                {matchData ? (
-                                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                                        Pg {matchData.pageNum}
-                                                                        <Icon name="maximize" size={14} />
-                                                                    </Box>
-                                                                ) : '-'}
-                                                            </TableCell>
-
-                                                                    {/* Data Cells */}
+                                                                <TableRow hover key={row.id} onClick={() => matchData && setActiveMatchRowId(row.id)} sx={{ cursor: matchData ? 'pointer' : 'default', bgcolor: isSelected ? '#e3f2fd' : 'inherit', '&:hover': { bgcolor: matchData ? '#bbdefb' : 'action.hover' } }}>
+                                                                    <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#bbdefb' : (matchData ? '#e3f2fd' : '#ffffff'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
+                                                                        {matchData ? (
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                                Pg {matchData.pageNum}
+                                                                                <Icon name="maximize" size={14} />
+                                                                            </Box>
+                                                                        ) : '-'}
+                                                                    </TableCell>
                                                                     {displayColumns.map((col) => {
-                              let cellValue = '';
-                              if (col.isOriginal) {
-                                cellValue = row[col.id] || '';
-                              } else if (col.isComputed) {
-                                const resultArr = evaluatePipeline(row[col.originalId], headerPipelines[col.originalId], modules);
-                                cellValue = Array.isArray(resultArr) ? resultArr.join('  OR  ') : resultArr;
-                              }
-                              const isError = cellValue === '#ERROR';
-                              
-                              return (
-                                <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? '#e3f2fd' : 'inherit', color: isError ? '#d32f2f' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
-                                  <Tooltip title={cellValue} placement="top-start" arrow disableInteractive>
-                                      <span>{cellValue}</span>
-                                  </Tooltip>
-                                </TableCell>
-                                );
-                              })}
-                            </TableRow>
-                          );
-                        })}
-                        {filteredRows.length === 0 && (
-                          <TableRow><TableCell colSpan={headers.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </Paper>
-              </Grid>
-              
-              {/* PDF Previewer Column */}
-              <Grid item xs={12} lg={5}>
-                <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
-                  <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Icon name="file-text" size={24} style={{ color: theme.palette.secondary.main }} />
-                    <Typography variant="h6">PDF Match Preview</Typography>
-                  </Box>
-                  <PdfViewer 
-                    pdfData={pdfData} 
-                    matches={matches}
-                    activeMatchRowId={activeMatchRowId}
-                  />
-                </Paper>
-              </Grid>
-
-            </Grid>
-          )}
-
-        </Container>
-                        
+                                                                        let cellValue = '';
+                                                                        if (col.isOriginal) {
+                                                                            cellValue = row[col.id] || '';
+                                                                        } else if (col.isComputed) {
+                                                                            // Retrieve correct variation value based on its specific array index
+                                                                            const resultArr = computedResults[col.originalId];
+                                                                            const arr = Array.isArray(resultArr) ? resultArr : [resultArr];
+                                                                            cellValue = String(arr[col.variationIndex] !== undefined && arr[col.variationIndex] !== null ? arr[col.variationIndex] : '');
+                                                                        }
+                                                                        const isError = cellValue === '#ERROR';
+                                                                        
+                                                                        return (
+                                                                            <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? '#e8f5e9' : 'inherit', color: isError ? '#d32f2f' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
+                                                                                <Tooltip title={cellValue} placement="top-start" arrow disableInteractive>
+                                                                                    <span>{cellValue}</span>
+                                                                                </Tooltip>
+                                                                            </TableCell>
+                                                                        );
+                                                                    })}
+                                                                </TableRow>
+                                                            );
+                                                        })}
+                                                        {filteredRows.length === 0 && (
+                                                            <TableRow><TableCell colSpan={displayColumns.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>
+                                                        )}
+                                                    </TableBody>
+                                                </Table>
+                                            </TableContainer>
+                                        </Paper>
+                                    </Grid>
+                                    
+                                    <Grid item xs={12} lg={5}>
+                                        <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
+                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                <Icon name="file-text" size={24} color="#1976d2" />
+                                                <Typography variant="h6">PDF Match Preview</Typography>
+                                            </Box>
+                                            <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} />
+                                        </Paper>
+                                    </Grid>
+                                </Grid>
+                            )}
+                        </Container>
+                                        
                         <Dialog open={isModuleManagerOpen} onClose={() => setIsModuleManagerOpen(false)} maxWidth="sm" fullWidth>
                             <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 Manage Formatting Modules
@@ -799,8 +761,15 @@
                                 <Typography variant="subtitle2" gutterBottom>Saved Modules</Typography>
                                 <List sx={{ mb: 3, border: '1px solid #eee', borderRadius: 1, bgcolor: 'background.paper', maxHeight: 200, overflow: 'auto' }}>
                                     {modules.map((mod) => (
-                                        <ListItem key={mod.id} secondaryAction={<IconButton edge="end" onClick={() => deleteModule(mod.id)}><Icon name="trash-2" size={16} color="#d32f2f" /></IconButton>}>
-                                            <ListItemText primary={mod.name} secondary={<Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{mod.code}</Typography>} />
+                                        <ListItem key={mod.id} sx={{ pr: 7 }} secondaryAction={
+                                            <IconButton edge="end" aria-label="delete" onClick={() => deleteModule(mod.id)}>
+                                                <Icon name="trash-2" size={16} color={theme.palette.error.main} />
+                                            </IconButton>
+                                        }>
+                                            <ListItemText 
+                                                primary={mod.name} 
+                                                secondary={<Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{mod.code}</Typography>} 
+                                            />
                                         </ListItem>
                                     ))}
                                 </List>
@@ -808,7 +777,7 @@
                                 <Typography variant="subtitle2" gutterBottom>Create New Custom Module</Typography>
                                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2, bgcolor: 'grey.50', borderRadius: 1, border: '1px dashed #ccc' }}>
                                     <TextField label="Module Name" size="small" fullWidth placeholder="e.g. Extract Year" value={newModuleName} onChange={(e) => setNewModuleName(e.target.value)} />
-                                    <TextField label="JavaScript Code" size="small" fullWidth multiline rows={3} placeholder="return value;" value={newModuleCode} onChange={(e) => setNewModuleCode(e.target.value)} helperText="Input variable is `value`. Must return a string." sx={{ fontFamily: 'monospace' }} />
+                                    <TextField label="JavaScript Code" size="small" fullWidth multiline rows={3} placeholder="return value;" value={newModuleCode} onChange={(e) => setNewModuleCode(e.target.value)} helperText="Input variable is `value`. Must return a string or an array of strings." sx={{ fontFamily: 'monospace' }} />
                                     <Button variant="contained" startIcon={<Icon name="plus" size={16} />} onClick={() => { addModule({ name: newModuleName, code: newModuleCode }); setNewModuleName(''); setNewModuleCode('return value;'); }} disabled={!newModuleName || !newModuleCode}>
                                         Add Module
                                     </Button>
