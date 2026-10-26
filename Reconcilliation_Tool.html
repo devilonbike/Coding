@@ -10,6 +10,8 @@
     <script crossorigin src="https://unpkg.com/@mui/material@5.15.11/umd/material-ui.production.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
 
     <style>
@@ -24,6 +26,8 @@
     <div id="root"></div>
 
     <script type="text/babel">
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
         const Icon = ({ name, size = 24, color = 'currentColor', ...props }) => {
             const iconRef = React.useRef(null);
             React.useEffect(() => {
@@ -91,24 +95,7 @@
             return { modules, addModule, deleteModule, exportModules, importModules };
         };
 
-        const useScript = (url) => {
-            const [loaded, setLoaded] = useState(false);
-            const [error, setError] = useState(false);
-            useEffect(() => {
-                if (!url) return;
-                if (url.includes('xlsx') && window.XLSX) { setLoaded(true); return; }
-                if (url.includes('pdf.js') && window.pdfjsLib) { setLoaded(true); return; }
-                const script = document.createElement('script');
-                script.src = url; script.async = true;
-                script.onload = () => setLoaded(true);
-                script.onerror = () => setError(true);
-                document.body.appendChild(script);
-                return () => document.body.removeChild(script);
-            }, [url]);
-            return { loaded, error };
-        };
-
-        const useExcelUploader = (xlsxLoaded) => {
+        const useExcelUploader = () => {
             const [workbook, setWorkbook] = useState(null);
             const [sheetNames, setSheetNames] = useState([]);
             const [fileName, setFileName] = useState('');
@@ -116,7 +103,6 @@
             const [uploadLoading, setUploadLoading] = useState(false);
             
             const handleFileUpload = useCallback(async (event) => {
-                if (!xlsxLoaded || !window.XLSX) { setUploadError("Excel library not loaded."); return; }
                 const file = event.target.files[0];
                 if (!file) return;
                 setUploadLoading(true); setUploadError(null); setFileName(file.name); setWorkbook(null); setSheetNames([]);
@@ -126,7 +112,7 @@
                     setWorkbook(wb); setSheetNames(wb.SheetNames || []);
                 } catch (err) { setUploadError("Failed to read Excel file."); setFileName(''); } 
                 finally { setUploadLoading(false); if (event.target) event.target.value = null; }
-            }, [xlsxLoaded]);
+            }, []);
             const resetUpload = useCallback(() => { setWorkbook(null); setSheetNames([]); setFileName(''); setUploadError(null); setUploadLoading(false); }, []);
             return { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError };
         };
@@ -139,7 +125,6 @@
             const [sheetError, setSheetError] = useState(null);
             
             const extractDataFromRange = useCallback((sheet, rangeStr) => {
-                if (!window.XLSX) return { extractedHeaders: [], extractedRows: [] };
                 try {
                     const jsonData = window.XLSX.utils.sheet_to_json(sheet, { range: rangeStr || sheet['!ref'], header: 1, defval: "", raw: false });
                     if (!jsonData || jsonData.length === 0) return { extractedHeaders: [], extractedRows: [] };
@@ -219,25 +204,30 @@
             return currentVals.length > 0 ? currentVals : [''];
         };
 
-        const usePdfUploader = (pdfLoaded) => {
+        const usePdfUploader = () => {
             const [pdfData, setPdfData] = useState(null);
             const [pdfFileName, setPdfFileName] = useState('');
             const [pdfUploadError, setPdfUploadError] = useState(null);
             const [pdfUploadLoading, setPdfUploadLoading] = useState(false);
+            const [isPdfParsing, setIsPdfParsing] = useState(false);
 
             const handlePdfUpload = useCallback(async (event) => {
-                if (!pdfLoaded || !window.pdfjsLib) return setPdfUploadError("PDF library not loaded.");
                 const file = event.target.files[0];
                 if (!file) return;
                 setPdfUploadLoading(true);
-                setPdfUploadError(null); setPdfFileName(file.name); setPdfData(null);
-                try { setPdfData(await file.arrayBuffer()); } 
-                catch (err) { setPdfUploadError("Failed to read PDF."); setPdfFileName(''); } 
-                finally { setPdfUploadLoading(false); if (event.target) event.target.value = null; }
-            }, [pdfLoaded]);
+                setPdfUploadError(null); setPdfFileName(file.name); setPdfData(null); setIsPdfParsing(true);
+                try { 
+                    const arrBuffer = await file.arrayBuffer();
+                    setPdfData(arrBuffer); 
+                } catch (err) { 
+                    setPdfUploadError("Failed to read PDF."); setPdfFileName(''); setIsPdfParsing(false);
+                } finally { 
+                    setPdfUploadLoading(false); if (event.target) event.target.value = null; 
+                }
+            }, []);
 
-            const resetPdfUpload = useCallback(() => { setPdfData(null); setPdfFileName(''); setPdfUploadError(null); }, []);
-            return { pdfData, pdfFileName, pdfUploadError, pdfUploadLoading, handlePdfUpload, resetPdfUpload, setPdfUploadError };
+            const resetPdfUpload = useCallback(() => { setPdfData(null); setPdfFileName(''); setPdfUploadError(null); setIsPdfParsing(false); }, []);
+            return { pdfData, pdfFileName, pdfUploadError, pdfUploadLoading, isPdfParsing, setIsPdfParsing, handlePdfUpload, resetPdfUpload, setPdfUploadError };
         };
 
         const usePdfMatcher = () => {
@@ -246,9 +236,9 @@
             const [progress, setProgress] = useState(0);
             const [statusText, setStatusText] = useState('');
 
-            const runMatching = async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, allModules) => {
-                if (!pdfData || !filteredRows.length || !selectedHeaderIds.length || !window.pdfjsLib) return;
-                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing concurrent scanner...');
+            const runMatching = async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, allModules, annotationColId) => {
+                if (!pdfData || !filteredRows.length || !selectedHeaderIds.length) return;
+                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing fast scanner...');
                 try {
                     const dataCopy = pdfData.slice(0);
                     const doc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
@@ -256,7 +246,8 @@
                     const newMatches = {};
                     const SCALE = 2.0; 
 
-                    setStatusText(`Scanning ${numPages} Pages...`);
+                    setStatusText(`Scanning ${numPages} Pages in parallel...`);
+                    setProgress(10);
                     
                     const pagePromises = Array.from({ length: numPages }, async (_, index) => {
                         const i = index + 1;
@@ -295,8 +286,8 @@
                     const pageTexts = await Promise.all(pagePromises);
                     setProgress(50);
                     setStatusText('Cross-referencing Excel data with PDF layout...');
-                    let processedRows = 0;
                     
+                    let processedRows = 0;
                     for (const row of filteredRows) {
                         const searchGroups = selectedHeaderIds.map(id => {
                             const rawVal = row[id];
@@ -321,10 +312,12 @@
                                 }
                                 if (foundMatch) break;
                             }
-                            if (foundMatch) newMatches[row.id] = foundMatch;
+                            if (foundMatch) {
+                                newMatches[row.id] = { ...foundMatch, annotationText: annotationColId ? row[annotationColId] : '' };
+                            }
                         }
                         processedRows++;
-                        setProgress(50 + Math.round((processedRows / filteredRows.length) * 50));
+                        if (processedRows % 10 === 0) setProgress(50 + Math.round((processedRows / filteredRows.length) * 50));
                     }
                     setMatches(newMatches);
                     setStatusText(`Reconciliation complete: ${Object.keys(newMatches).length} of ${filteredRows.length} rows matched.`);
@@ -366,14 +359,14 @@
             }, [activeRowId, highlights]);
 
             const displayScale = 1.0 * zoom; 
-            let cssWidth = 'auto', cssHeight = 'auto';
+            let cssWidth = '100%', cssHeight = 'auto';
             if (renderData) {
                 cssWidth = `${(renderData.viewport.width / renderData.baseScale) * displayScale}px`;
                 cssHeight = `${(renderData.viewport.height / renderData.baseScale) * displayScale}px`;
             }
 
             return (
-                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, mx: 'auto', boxShadow: 3, bgcolor: 'white', width: cssWidth, height: cssHeight, transition: 'width 0.15s ease, height 0.15s ease', flexShrink: 0 }}>
+                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, mx: 'auto', boxShadow: 3, bgcolor: 'white', width: cssWidth, height: cssHeight, transition: 'width 0.2s ease-out, height 0.2s ease-out', flexShrink: 0 }}>
                     <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
                     {renderData && highlights?.map((hl, idx) => {
                         const { x, y, w, h, sourceScale } = hl.boundingBox;
@@ -388,16 +381,27 @@
                                 pointerEvents: 'none', borderRadius: '4px',
                                 boxShadow: isActive ? '0 0 15px rgba(244, 67, 54, 0.7)' : 'none',
                                 zIndex: isActive ? 10 : 5, transition: 'all 0.3s ease'
-                            }} />
+                            }}>
+                                {hl.annotationText && (
+                                    <div style={{
+                                        position: 'absolute', left: '100%', top: '-2px', marginLeft: '6px',
+                                        backgroundColor: isActive ? 'rgba(244, 67, 54, 0.9)' : 'rgba(255, 193, 7, 0.9)',
+                                        color: isActive ? '#fff' : '#000', padding: '2px 6px', borderRadius: '4px',
+                                        fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                                    }}>
+                                        {hl.annotationText}
+                                    </div>
+                                )}
+                            </div>
                         );
                     })}
                 </Box>
-    );
-};
-        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf, isMatching, progress }) => {
+            );
+        };
+
+        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf, isMatching, progress, pdfUploadLoading, isPdfParsing, setIsPdfParsing }) => {
             const [doc, setDoc] = useState(null);
             const [numPages, setNumPages] = useState(0);
-            const [isPdfParsing, setIsPdfParsing] = useState(false);
             const [zoom, setZoom] = useState(1);
             const [isPanning, setIsPanning] = useState(false);
             const containerRef = useRef(null);
@@ -407,14 +411,9 @@
 
             useEffect(() => {
                 const loadPdf = async () => {
-                    if (!pdfData || !window.pdfjsLib) {
-                        setDoc(null);
-                        setNumPages(0);
-                        return;
+                    if (!pdfData) {
+                        setDoc(null); setNumPages(0); setIsPdfParsing(false); return;
                     }
-                    // Trigger spinner
-                    setNumPages(0);
-                    setIsPdfParsing(true);
                     try {
                         const dataCopy = pdfData.slice(0);
                         const loadedDoc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
@@ -423,14 +422,14 @@
                     } catch(e) { console.error(e); }
                     finally { setIsPdfParsing(false); }
                 };
-                loadPdf();
-            }, [pdfData]);
+                if(isPdfParsing) loadPdf();
+            }, [pdfData, isPdfParsing, setIsPdfParsing]);
 
             const highlightsByPage = useMemo(() => {
                 const map = {};
                 Object.entries(matches).forEach(([rowId, match]) => {
                     if (!map[match.pageNum]) map[match.pageNum] = [];
-                    map[match.pageNum].push({ rowId, boundingBox: match.boundingBox });
+                    map[match.pageNum].push({ rowId, boundingBox: match.boundingBox, annotationText: match.annotationText });
                 });
                 return map;
             }, [matches]);
@@ -451,32 +450,39 @@
             };
             const handleMouseUpOrLeave = () => {
                 if (isDragging.current) {
-            isDragging.current = false;
-            if (containerRef.current) containerRef.current.style.cursor = isPanning ? 'grab' : 'auto';
-        }
-    };
+                    isDragging.current = false;
+                    if (containerRef.current) containerRef.current.style.cursor = isPanning ? 'grab' : 'auto';
+                }
+            };
 
-    if (!pdfData) return (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#f5f5f5' }}>
-            <Typography color="text.secondary">No PDF uploaded</Typography>
-        </Box>
-    );
-    
-    if (numPages === 0 || isPdfParsing || isMatching) return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#9e9e9e' }}>
-            <CircularProgress size={50} sx={{ mb: 3 }} color="inherit" style={{ color: 'white' }} />
-            <Typography color="white" variant="h6">
-                {isMatching ? 'Reconciling Data...' : 'Parsing Document...'}
-            </Typography>
-            <Typography color="white" variant="body2" sx={{ opacity: 0.8 }}>
-                {isMatching ? `${progress}% Complete` : 'This may take a few seconds for large PDFs'}
-            </Typography>
-        </Box>
-    );
+            if (pdfUploadLoading) return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#f5f5f5', width: '100%' }}>
+                    <CircularProgress size={50} sx={{ mb: 3 }} />
+                    <Typography variant="h6">Reading PDF File...</Typography>
+                </Box>
+            );
 
-    return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
-                    <Box sx={{ display: 'flex', gap: 1, p: 1, borderBottom: '1px solid #ddd', bgcolor: '#f5f5f5', alignItems: 'center', flexWrap: 'wrap' }}>
+            if (isPdfParsing || isMatching) return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#9e9e9e', width: '100%' }}>
+                    <CircularProgress size={50} sx={{ mb: 3 }} style={{ color: 'white' }} />
+                    <Typography color="white" variant="h6">
+                        {isMatching ? 'Reconciling Data...' : 'Parsing Document...'}
+                    </Typography>
+                    <Typography color="white" variant="body2" sx={{ opacity: 0.8 }}>
+                        {isMatching ? `${progress}% Complete` : 'This may take a few seconds for large PDFs'}
+                    </Typography>
+                </Box>
+            );
+
+            if (!pdfData) return (
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#f5f5f5', width: '100%' }}>
+                    <Typography color="text.secondary">No PDF uploaded</Typography>
+                </Box>
+            );
+
+            return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
+                    <Box sx={{ display: 'flex', gap: 1, p: 1, borderBottom: '1px solid #ddd', bgcolor: '#f5f5f5', alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
                         <IconButton size="small" onClick={() => setZoom(z => Math.max(0.5, z - 0.2))} title="Zoom Out"><Icon name="zoom-out" size={18} /></IconButton>
                         <Typography variant="body2" sx={{ minWidth: 40, textAlign: 'center' }}>{Math.round(zoom * 100)}%</Typography>
                         <IconButton size="small" onClick={() => setZoom(z => Math.min(3, z + 0.2))} title="Zoom In"><Icon name="zoom-in" size={18} /></IconButton>
@@ -558,15 +564,7 @@
         };
 
         function App() {
-            const { loaded: xlsxLoaded, error: xlsxError } = useScript('https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js');
-            const { loaded: pdfLoaded, error: pdfJsError } = useScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
-            useScript('https://unpkg.com/pdf-lib/dist/pdf-lib.min.js');
-
-            useEffect(() => {
-                if (pdfLoaded && window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-            }, [pdfLoaded]);
-
-            const { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError } = useExcelUploader(xlsxLoaded);
+            const { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError } = useExcelUploader();
             const [selectedSheet, setSelectedSheet] = useState('');
             const { suggestedRange, customRange, headers, rows, handleRangeChange, sheetError } = useSheetData(workbook, selectedSheet);
             
@@ -577,10 +575,11 @@
             const { selectedHeaderIds, handleHeaderSelectionChange, headerPipelines, addModuleToPipeline, removeModuleFromPipeline } = useHeaderSelection();
             const [isModuleManagerOpen, setIsModuleManagerOpen] = useState(false);
 
-            const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, pdfUploadError, pdfUploadLoading } = usePdfUploader(pdfLoaded);
+            const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, pdfUploadError, pdfUploadLoading, isPdfParsing, setIsPdfParsing } = usePdfUploader();
             const { runMatching, isMatching, matches, progress, statusText } = usePdfMatcher();
 
             const [showOnlySelectedColumns, setShowOnlySelectedColumns] = useState(false);
+            const [annotationColumnId, setAnnotationColumnId] = useState('');
 
             const displayColumns = useMemo(() => {
                 const cols = [];
@@ -646,7 +645,7 @@
                 else setSelectedSheet('');
             }, [sheetNames]);
 
-            useEffect(() => { setFilters({}); setActiveMatchRowId(null); setShowOnlySelectedColumns(false); }, [selectedSheet, customRange]);
+            useEffect(() => { setFilters({}); setActiveMatchRowId(null); setShowOnlySelectedColumns(false); setAnnotationColumnId(''); }, [selectedSheet, customRange]);
 
             const handleExportExcel = () => {
                 if (!window.XLSX || filteredRows.length === 0) return;
@@ -674,8 +673,9 @@
             const handleExportPdf = async () => {
                 if (!pdfData || !window.PDFLib) return;
                 try {
-                    const { PDFDocument, rgb } = window.PDFLib;
+                    const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
                     const pdfDoc = await PDFDocument.load(pdfData);
+                    const helveticaFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
                     const pages = pdfDoc.getPages();
                     Object.values(matches).forEach(match => {
                         const page = pages[match.pageNum - 1];
@@ -691,6 +691,15 @@
                             borderColor: rgb(1, 0.2, 0.2), borderWidth: 1.5,
                             color: rgb(1, 0.2, 0.2), opacity: 0.1, borderOpacity: 0.8
                         });
+                        if (match.annotationText) {
+                            page.drawText(String(match.annotationText), {
+                                x: pdfX + pdfW + 4,
+                                y: pdfY + (pdfH / 2) - 4,
+                                size: 10,
+                                font: helveticaFont,
+                                color: rgb(0.9, 0.1, 0.1)
+                            });
+                        }
                     });
                     const pdfBytes = await pdfDoc.save();
                     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
@@ -701,7 +710,7 @@
                 } catch(err) { console.error("Failed to export PDF", err); }
             };
 
-            const activeError = uploadError || sheetError || pdfUploadError || (xlsxError ? "Excel library failed." : null) || (pdfJsError ? "PDF library failed." : null) || (pdfData && !window.PDFLib ? "PDF-Lib not loaded yet." : null);
+            const activeError = uploadError || sheetError || pdfUploadError || null;
 
             return (
                 <ThemeProvider theme={theme}>
@@ -724,7 +733,7 @@
                                             <Typography variant="h6">1. Upload Excel Data</Typography>
                                             <input type="file" accept=".xlsx, .xls, .csv" style={{ display: 'none' }} ref={fileInputRef} onChange={handleFileUpload} />
                                             {!fileName ? (
-                                                <Button variant="outlined" color="primary" startIcon={<Icon name="upload" />} onClick={() => fileInputRef.current?.click()} disabled={uploadLoading || !xlsxLoaded} fullWidth sx={{ py: 1.5 }}>
+                                                <Button variant="outlined" color="primary" startIcon={<Icon name="upload" />} onClick={() => fileInputRef.current?.click()} disabled={uploadLoading} fullWidth sx={{ py: 1.5 }}>
                                                     {uploadLoading ? 'Uploading...' : 'Select Excel File'}
                                                 </Button>
                                             ) : (
@@ -790,8 +799,8 @@
                                             <Typography variant="h6">2. Configure PDF Matcher</Typography>
                                             <input type="file" accept="application/pdf" style={{ display: 'none' }} ref={pdfInputRef} onChange={handlePdfUpload} />
                                             {!pdfFileName ? (
-                                                <Button variant="outlined" color="secondary" startIcon={pdfUploadLoading ? <CircularProgress size={20} color="inherit" /> : <Icon name="file-text" />} onClick={() => pdfInputRef.current?.click()} disabled={!pdfLoaded || pdfUploadLoading} fullWidth sx={{ py: 1.5 }}>
-                                                    {pdfUploadLoading ? 'Reading PDF...' : 'Upload Target PDF'}
+                                                <Button variant="outlined" color="secondary" startIcon={pdfUploadLoading ? <CircularProgress size={20} color="inherit" /> : <Icon name="file-text" />} onClick={() => pdfInputRef.current?.click()} disabled={pdfUploadLoading} fullWidth sx={{ py: 1.5 }}>
+                                                    Upload Target PDF
                                                 </Button>
                                             ) : (
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, border: '1px solid', borderColor: 'secondary.main', borderRadius: 1, bgcolor: '#e3f2fd' }}>
@@ -817,10 +826,20 @@
                                                 </Select>
                                             </FormControl>
 
+                                            <FormControl fullWidth size="small" disabled={headers.length === 0}>
+                                                <InputLabel id="annotation-select-label">Optional: Print Column Value on PDF Match</InputLabel>
+                                                <Select labelId="annotation-select-label" value={annotationColumnId} onChange={(e) => setAnnotationColumnId(e.target.value)} label="Optional: Print Column Value on PDF Match">
+                                                    <MenuItem value=""><em>None</em></MenuItem>
+                                                    {headers.map((header) => (
+                                                        <MenuItem key={header.id} value={header.id}>{header.label}</MenuItem>
+                                                    ))}
+                                                </Select>
+                                            </FormControl>
+
                                             <Button 
                                                 variant="contained" color="primary" fullWidth size="large"
                                                 startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="settings" />}
-                                                onClick={() => runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules)}
+                                                onClick={() => runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, modules, annotationColumnId)}
                                                 disabled={isMatching || !pdfData || selectedHeaderIds.length === 0 || filteredRows.length === 0}
                                             >
                                                 {isMatching ? `Scanning... (${progress}%)` : 'Reconcile'}
@@ -835,10 +854,9 @@
                                 </Grid>
                             </Paper>
 
-                            {}
                             {selectedSheet && headers.length > 0 && (
-                                <Grid container spacing={3} sx={{ height: { xs: 'auto', lg: '75vh' }, minHeight: 600 }}>
-                                    <Grid item xs={12} lg={7} sx={{ height: { xs: '65vh', lg: '100%' }, mb: { xs: 3, lg: 0 } }}>
+                                <Grid container spacing={3} sx={{ height: '75vh', minHeight: 600 }}>
+                                    <Grid item xs={12} lg={7} sx={{ height: '100%', mb: 0 }}>
                                         <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
                                             <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
                                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
@@ -935,23 +953,24 @@
                                         </Paper>
                                     </Grid>
                                     
-                                    <Grid item xs={12} lg={5} sx={{ height: { xs: '75vh', lg: '100%' } }}>
-                                <Paper sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #ddd' }}>
-                                    <PdfViewer pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} exportPdf={handleExportPdf} isMatching={isMatching} progress={progress} />
-                                </Paper>
-                            </Grid>
-                        </Grid>
-                    )}
+                                    <Grid item xs={12} lg={5} sx={{ height: '100%' }}>
+                                        <Paper sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #ddd' }}>
+                                            <PdfViewer 
+                                                pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} 
+                                                exportPdf={handleExportPdf} isMatching={isMatching} progress={progress} 
+                                                pdfUploadLoading={pdfUploadLoading} isPdfParsing={isPdfParsing} setIsPdfParsing={setIsPdfParsing} 
+                                            />
+                                        </Paper>
+                                    </Grid>
+                                </Grid>
+                            )}
                         </Container>
                         
                         <ModuleManagerDialog
                             open={isModuleManagerOpen}
                             onClose={() => setIsModuleManagerOpen(false)}
-                            modules={modules}
-                            addModule={addModule}
-                            deleteModule={deleteModule}
-                            exportModules={exportModules}
-                            importModules={importModules}
+                            modules={modules} addModule={addModule} deleteModule={deleteModule}
+                            exportModules={exportModules} importModules={importModules}
                         />
                         <Snackbar open={!!activeError} autoHideDuration={6000} onClose={handleCloseError} message={activeError} action={<IconButton size="small" color="inherit" onClick={handleCloseError}><Icon name="x" size={20} /></IconButton>} />
                     </Box>
