@@ -5,11 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Automated Reconciliation Platform</title>
     
+    <!-- React & Material UI -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/@mui/material@5.15.11/umd/material-ui.production.min.js"></script>
+    
+    <!-- Icons & Compilers -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Utility Libraries (Excel & PDF) -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
@@ -26,8 +31,10 @@
     <div id="root"></div>
 
     <script type="text/babel">
+        // Configure PDF.js Web Worker
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+        // Safe Icon Component for HTML Standalone
         const Icon = ({ name, size = 24, color = 'currentColor', ...props }) => {
             const iconRef = React.useRef(null);
             React.useEffect(() => {
@@ -215,10 +222,14 @@
                 const file = event.target.files[0];
                 if (!file) return;
                 setPdfUploadLoading(true);
-                setPdfUploadError(null); setPdfFileName(file.name); setPdfData(null); setIsPdfParsing(true);
+                setPdfUploadError(null); 
+                setPdfFileName(file.name); 
+                setPdfData(null); 
+                setIsPdfParsing(true); // Triggers loading UI immediately
+                
                 try { 
                     const arrBuffer = await file.arrayBuffer();
-                    setPdfData(arrBuffer); 
+                    setPdfData(new Uint8Array(arrBuffer)); 
                 } catch (err) { 
                     setPdfUploadError("Failed to read PDF."); setPdfFileName(''); setIsPdfParsing(false);
                 } finally { 
@@ -240,8 +251,9 @@
                 if (!pdfData || !filteredRows.length || !selectedHeaderIds.length) return;
                 setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing fast scanner...');
                 try {
-                    const dataCopy = pdfData.slice(0);
-                    const doc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
+                    // Use slice() to prevent buffer detachment race conditions
+                    const dataArray = pdfData.slice();
+                    const doc = await window.pdfjsLib.getDocument(dataArray).promise;
                     const numPages = doc.numPages;
                     const newMatches = {};
                     const SCALE = 2.0; 
@@ -333,23 +345,39 @@
 
             useEffect(() => {
                 let renderTask = null;
+                let isActive = true;
+                
                 const renderPage = async () => {
                     if (!doc || !canvasRef.current) return;
                     try {
                         const page = await doc.getPage(pageNum);
+                        if (!isActive) return; // Prevent strict mode race conditions
+                        
                         const baseScale = 2.0; 
                         const viewport = page.getViewport({ scale: baseScale });
                         const canvas = canvasRef.current;
                         const context = canvas.getContext('2d');
+                        
                         canvas.height = viewport.height;
                         canvas.width = viewport.width;
+                        
                         renderTask = page.render({ canvasContext: context, viewport });
                         await renderTask.promise;
-                        setRenderData({ viewport, baseScale });
-                    } catch (err) { if (err.name !== 'RenderingCancelledException') console.error(err); }
+                        
+                        if (isActive) {
+                            setRenderData({ viewport, baseScale });
+                        }
+                    } catch (err) { 
+                        if (err.name !== 'RenderingCancelledException') console.error("PDF Render Error:", err); 
+                    }
                 };
+                
                 renderPage();
-                return () => { if (renderTask) renderTask.cancel(); };
+                
+                return () => { 
+                    isActive = false;
+                    if (renderTask) renderTask.cancel(); 
+                };
             }, [doc, pageNum]);
 
             useEffect(() => {
@@ -359,15 +387,14 @@
             }, [activeRowId, highlights]);
 
             const displayScale = 1.0 * zoom; 
-            let cssWidth = '100%', cssHeight = 'auto';
+            let cssWidth = '100%';
             if (renderData) {
                 cssWidth = `${(renderData.viewport.width / renderData.baseScale) * displayScale}px`;
-                cssHeight = `${(renderData.viewport.height / renderData.baseScale) * displayScale}px`;
             }
 
             return (
-                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, mx: 'auto', boxShadow: 3, bgcolor: 'white', width: cssWidth, height: cssHeight, transition: 'width 0.2s ease-out, height 0.2s ease-out', flexShrink: 0 }}>
-                    <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
+                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, mx: 'auto', boxShadow: 3, bgcolor: 'white', width: cssWidth, transition: 'width 0.2s ease-out', flexShrink: 0 }}>
+                    <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: 'auto' }} />
                     {renderData && highlights?.map((hl, idx) => {
                         const { x, y, w, h, sourceScale } = hl.boundingBox;
                         const ratio = displayScale / sourceScale;
@@ -410,20 +437,30 @@
             const scrollPos = useRef({ left: 0, top: 0 });
 
             useEffect(() => {
+                let active = true;
                 const loadPdf = async () => {
                     if (!pdfData) {
-                        setDoc(null); setNumPages(0); setIsPdfParsing(false); return;
+                        if (active) { setDoc(null); setNumPages(0); setIsPdfParsing(false); }
+                        return;
                     }
+                    
+                    if (active) setIsPdfParsing(true);
+                    
                     try {
-                        const dataCopy = pdfData.slice(0);
-                        const loadedDoc = await window.pdfjsLib.getDocument({ data: dataCopy }).promise;
-                        setDoc(loadedDoc); 
-                        setNumPages(loadedDoc.numPages);
-                    } catch(e) { console.error(e); }
-                    finally { setIsPdfParsing(false); }
+                        const dataArray = pdfData.slice(); // Safe clone
+                        const loadedDoc = await window.pdfjsLib.getDocument(dataArray).promise;
+                        if (active) {
+                            setDoc(loadedDoc); 
+                            setNumPages(loadedDoc.numPages);
+                        }
+                    } catch(e) { console.error("PDF Load Error:", e); }
+                    finally { if (active) setIsPdfParsing(false); }
                 };
-                if(isPdfParsing) loadPdf();
-            }, [pdfData, isPdfParsing, setIsPdfParsing]);
+                
+                loadPdf();
+                
+                return () => { active = false; };
+            }, [pdfData, setIsPdfParsing]);
 
             const highlightsByPage = useMemo(() => {
                 const map = {};
@@ -524,7 +561,7 @@
                 <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
                     <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         Manage Formatting Modules
-                        <IconButton onClick={onClose} size="small"><Icon name="x" /></IconButton>
+                        <IconButton onClick={onClose} size="small"><Icon name="x" size={20} /></IconButton>
                     </DialogTitle>
                     <DialogContent dividers>
                         <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
@@ -674,7 +711,7 @@
                 if (!pdfData || !window.PDFLib) return;
                 try {
                     const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
-                    const pdfDoc = await PDFDocument.load(pdfData);
+                    const pdfDoc = await PDFDocument.load(pdfData.slice());
                     const helveticaFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
                     const pages = pdfDoc.getPages();
                     Object.values(matches).forEach(match => {
