@@ -54,7 +54,7 @@
             Paper, Grid, Button, IconButton, FormControl, TextField, CircularProgress,
             TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Tooltip,
             Snackbar, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, Divider,
-            Switch, FormControlLabel
+            Switch, FormControlLabel, ButtonGroup
         } = MaterialUI;
 
         const theme = createTheme({
@@ -338,7 +338,7 @@
             return { runMatching, isMatching, matches, progress, statusText };
         };
 
-        const PdfPage = ({ doc, pageNum, highlights, activeRowId, zoom }) => {
+        const PdfPage = ({ doc, pageNum, highlights, activeRowId, zoom, annotationPosition }) => {
             const canvasRef = useRef(null);
             const containerRef = useRef(null);
             const [renderData, setRenderData] = useState(null);
@@ -411,10 +411,14 @@
                             }}>
                                 {hl.annotationText && (
                                     <div style={{
-                                        position: 'absolute', left: '100%', top: '-2px', marginLeft: '6px',
+                                        position: 'absolute',
                                         backgroundColor: isActive ? 'rgba(244, 67, 54, 0.9)' : 'rgba(255, 193, 7, 0.9)',
                                         color: isActive ? '#fff' : '#000', padding: '2px 6px', borderRadius: '4px',
-                                        fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                                        fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                                        ...(annotationPosition === 'left' ? { right: '100%', top: '50%', transform: 'translateY(-50%)', marginRight: '6px' } :
+                                           annotationPosition === 'top' ? { bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: '6px' } :
+                                           annotationPosition === 'bottom' ? { top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: '6px' } :
+                                           { left: '100%', top: '50%', transform: 'translateY(-50%)', marginLeft: '6px' })
                                     }}>
                                         {hl.annotationText}
                                     </div>
@@ -426,7 +430,7 @@
             );
         };
 
-        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf, isMatching, progress, pdfUploadLoading, isPdfParsing, setIsPdfParsing }) => {
+        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf, isMatching, progress, pdfUploadLoading, isPdfParsing, setIsPdfParsing, annotationPosition }) => {
             const [doc, setDoc] = useState(null);
             const [numPages, setNumPages] = useState(0);
             const [zoom, setZoom] = useState(1);
@@ -544,7 +548,7 @@
                         }}
                     >
                         {Array.from({ length: numPages }).map((_, i) => (
-                            <PdfPage key={i + 1} doc={doc} pageNum={i + 1} zoom={zoom} highlights={highlightsByPage[i + 1] || []} activeRowId={activeMatchRowId} />
+                            <PdfPage key={i + 1} doc={doc} pageNum={i + 1} zoom={zoom} highlights={highlightsByPage[i + 1] || []} activeRowId={activeMatchRowId} annotationPosition={annotationPosition} />
                         ))}
                     </Box>
                 </Box>
@@ -617,6 +621,7 @@
 
             const [showOnlySelectedColumns, setShowOnlySelectedColumns] = useState(false);
             const [annotationColumnId, setAnnotationColumnId] = useState('');
+            const [annotationPosition, setAnnotationPosition] = useState('right');
 
             const displayColumns = useMemo(() => {
                 const cols = [];
@@ -729,9 +734,18 @@
                             color: rgb(1, 0.2, 0.2), opacity: 0.1, borderOpacity: 0.8
                         });
                         if (match.annotationText) {
+                            const textWidth = helveticaFont.widthOfTextAtSize(String(match.annotationText), 10);
+                            let textX, textY;
+                            switch(annotationPosition) {
+                                case 'left': textX = pdfX - textWidth - 4; textY = pdfY + (pdfH / 2) - 4; break;
+                                case 'top': textX = pdfX + (pdfW / 2) - (textWidth / 2); textY = pdfY + pdfH + 4; break;
+                                case 'bottom': textX = pdfX + (pdfW / 2) - (textWidth / 2); textY = pdfY - 12; break;
+                                case 'right':
+                                default: textX = pdfX + pdfW + 4; textY = pdfY + (pdfH / 2) - 4; break;
+                            }
                             page.drawText(String(match.annotationText), {
-                                x: pdfX + pdfW + 4,
-                                y: pdfY + (pdfH / 2) - 4,
+                                x: textX,
+                                y: textY,
                                 size: 10,
                                 font: helveticaFont,
                                 color: rgb(0.9, 0.1, 0.1)
@@ -873,6 +887,22 @@
                                                 </Select>
                                             </FormControl>
 
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                                                <Typography variant="body2" color="text.secondary" sx={{ minWidth: 120 }}>Annotation Position:</Typography>
+                                                <ButtonGroup size="small" disabled={!annotationColumnId} fullWidth>
+                                                    {['left', 'top', 'bottom', 'right'].map(pos => (
+                                                        <Button 
+                                                            key={pos}
+                                                            variant={annotationPosition === pos ? 'contained' : 'outlined'}
+                                                            onClick={() => setAnnotationPosition(pos)}
+                                                            sx={{ textTransform: 'capitalize', flexGrow: 1 }}
+                                                        >
+                                                            {pos}
+                                                        </Button>
+                                                    ))}
+                                                </ButtonGroup>
+                                            </Box>
+
                                             <Button 
                                                 variant="contained" color="primary" fullWidth size="large"
                                                 startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="settings" />}
@@ -996,6 +1026,7 @@
                                                 pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} 
                                                 exportPdf={handleExportPdf} isMatching={isMatching} progress={progress} 
                                                 pdfUploadLoading={pdfUploadLoading} isPdfParsing={isPdfParsing} setIsPdfParsing={setIsPdfParsing} 
+                                                annotationPosition={annotationPosition}
                                             />
                                         </Paper>
                                     </Grid>
