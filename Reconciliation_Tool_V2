@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automated Reconciliation Platform</title>
+
+    <!-- React & Material UI -->
+    <script src="./vendor/react.production.min.js"></script>
+    <script src="./vendor/react-dom.production.min.js"></script>
+    <script src="./vendor/material-ui.production.min.js"></script>
+    
+    <!-- Icons & Compilers -->
+    <script src="./vendor/lucide.min.js"></script>
+    <script src="./vendor/babel.min.js"></script>
+    
+    <!-- Utility Libraries (Excel & PDF) -->
+    <script src="./vendor/xlsx.full.min.js"></script>
+    <script src="./vendor/pdf.min.js"></script>
+    <script src="./vendor/pdf-lib.min.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; background-color: #f4f6f8; font-family: 'Roboto', sans-serif; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Local PDF.js Worker
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.min.js';
+
+        // Safe Icon Component
+        const Icon = ({ name, size = 24, color = 'currentColor', ...props }) => {
+            const iconRef = React.useRef(null);
+            React.useEffect(() => {
+                if (iconRef.current) {
+                    const formattedName = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+                    iconRef.current.innerHTML = `<i data-lucide="${formattedName}"></i>`;
+                    lucide.createIcons({ root: iconRef.current, attrs: { width: size, height: size, stroke: color } });
+                }
+            }, [name, size, color]);
+            return <span ref={iconRef} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} {...props} />;
+        };
+
+        const { useState, useCallback, useRef, useEffect, useMemo } = React;
+        const {
+            Select, MenuItem, InputLabel, Checkbox, ListItemText, OutlinedInput,
+            Chip, createTheme, ThemeProvider, CssBaseline, Box, Container, Typography,
+            Paper, Grid, Button, IconButton, FormControl, TextField, CircularProgress,
+            TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Tooltip,
+            Snackbar, Switch, FormControlLabel, ButtonGroup, Divider
+        } = MaterialUI;
+
+        const theme = createTheme({
+            palette: { primary: { main: '#2e7d32' }, secondary: { main: '#1976d2' }, background: { default: '#f4f6f8' } },
+            typography: { fontFamily: 'Roboto, Arial, sans-serif' },
+        });
+
+        const PREDEFINED_MODULES = {
+            'mod_1': { 
+                name: 'Remove Symbols ($,)', 
+                apply: (value) => String(value || '').replace(/[$,]/g, "") 
+            },
+            'mod_2': { 
+                name: 'Scale by 1000', 
+                apply: (value) => { 
+                    const num = Number(String(value || '').replace(/[$,]/g, "")); 
+                    return isNaN(num) ? String(value || '') : (num / 1000).toString(); 
+                } 
+            },
+            'mod_3': { 
+                name: 'Format 2 Decimals', 
+                apply: (value) => { 
+                    const num = Number(String(value || '').replace(/[$,]/g, "")); 
+                    return isNaN(num) ? String(value || '') : num.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2}); 
+                } 
+            },
+            'mod_4': { 
+                name: 'Date: DD-MM-YYYY to DD-Mon-YY', 
+                apply: (value) => { 
+                    const str = String(value || '');
+                    const parts = str.split("-"); 
+                    if(parts.length!==3) return str; 
+                    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]; 
+                    return `${parts[0]}-${months[parseInt(parts[1])-1]}-${parts[2].slice(-2)}`; 
+                } 
+            },
+            'mod_5': { 
+                name: 'Extract First Word', 
+                apply: (value) => String(value || '').split(" ")[0] 
+            }
+        };
+
+        const useExcelUploader = () => {
+            const [workbook, setWorkbook] = useState(null);
+            const [sheetNames, setSheetNames] = useState([]);
+            const [fileName, setFileName] = useState('');
+            const [uploadError, setUploadError] = useState(null);
+            const [uploadLoading, setUploadLoading] = useState(false);
+            
+            const handleFileUpload = useCallback(async (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                setUploadLoading(true); setUploadError(null); setFileName(file.name); setWorkbook(null); setSheetNames([]);
+                try {
+                    const data = await file.arrayBuffer();
+                    const wb = window.XLSX.read(data, { type: 'array' });
+                    setWorkbook(wb); setSheetNames(wb.SheetNames || []);
+                } catch (err) { setUploadError("Failed to read Excel file."); setFileName(''); } 
+                finally { setUploadLoading(false); if (event.target) event.target.value = null; }
+            }, []);
+            const resetUpload = useCallback(() => { setWorkbook(null); setSheetNames([]); setFileName(''); setUploadError(null); setUploadLoading(false); }, []);
+            return { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError };
+        };
+
+        const useSheetData = (workbook, selectedSheetName) => {
+            const [suggestedRange, setSuggestedRange] = useState('');
+            const [customRange, setCustomRange] = useState('');
+            const [headers, setHeaders] = useState([]);
+            const [rows, setRows] = useState([]);
+            const [sheetError, setSheetError] = useState(null);
+            
+            const extractDataFromRange = useCallback((sheet, rangeStr) => {
+                try {
+                    const jsonData = window.XLSX.utils.sheet_to_json(sheet, { range: rangeStr || sheet['!ref'], header: 1, defval: "", raw: false });
+                    if (!jsonData || jsonData.length === 0) return { extractedHeaders: [], extractedRows: [] };
+                    const rawHeaders = jsonData[0];
+                    const extractedHeaders = rawHeaders.map((headerText, index) => ({ id: `col_${index}`, label: String(headerText || `Column ${index + 1}`), colIndex: index }));
+                    const extractedRows = jsonData.slice(1).map((rowArray, rowIndex) => {
+                        const rowData = { id: `row_${rowIndex}` }; 
+                        extractedHeaders.forEach((header, index) => { rowData[header.id] = String(rowArray[index] !== undefined && rowArray[index] !== null ? rowArray[index] : ""); });
+                        return rowData;
+                    });
+                    return { extractedHeaders, extractedRows };
+                } catch (err) { setSheetError("Invalid range."); return { extractedHeaders: [], extractedRows: [] }; }
+            }, []);
+
+            useEffect(() => {
+                if (!workbook || !selectedSheetName) { setSuggestedRange(''); setCustomRange(''); setHeaders([]); setRows([]); setSheetError(null); return; }
+                try {
+                    const sheet = workbook.Sheets[selectedSheetName];
+                    if (!sheet) return setSheetError("Sheet not found.");
+                    const sheetRef = sheet['!ref'];
+                    if (sheetRef) { setSuggestedRange(sheetRef); setCustomRange(sheetRef); setSheetError(null); } 
+                    else setSheetError("Sheet is empty.");
+                } catch (err) { setSheetError("Error analyzing sheet."); }
+            }, [workbook, selectedSheetName]);
+
+            useEffect(() => {
+                if (!workbook || !selectedSheetName || !customRange) { setHeaders([]); setRows([]); return; }
+                const sheet = workbook.Sheets[selectedSheetName];
+                if (sheet) {
+                    const { extractedHeaders, extractedRows } = extractDataFromRange(sheet, customRange);
+                    setHeaders(extractedHeaders); setRows(extractedRows);
+                }
+            }, [workbook, selectedSheetName, customRange, extractDataFromRange]);
+
+            const handleRangeChange = (newRange) => { setCustomRange(newRange.toUpperCase()); setSheetError(null); };
+            return { suggestedRange, customRange, headers, rows, handleRangeChange, sheetError, setCustomRange };
+        };
+
+        const useFilteredData = (rows, filters) => {
+            return useMemo(() => {
+                const activeFilters = Object.entries(filters).filter(([_, value]) => value.trim() !== '');
+                if (activeFilters.length === 0) return rows;
+                return rows.filter(row => activeFilters.every(([colId, filterValue]) => String(row[colId] || "").toLowerCase().includes(filterValue.toLowerCase().trim())));
+            }, [rows, filters]);
+        };
+
+        const useHeaderSelection = () => {
+            const [selectedHeaderIds, setSelectedHeaderIds] = useState([]);
+            const [headerPipelines, setHeaderPipelines] = useState({});
+            const handleHeaderSelectionChange = (event) => setSelectedHeaderIds(typeof event.target.value === 'string' ? event.target.value.split(',') : event.target.value);
+            const addModuleToPipeline = (colId, moduleId) => setHeaderPipelines(prev => ({ ...prev, [colId]: [...(prev[colId] || []), moduleId] }));
+            const removeModuleFromPipeline = (colId, indexToRemove) => setHeaderPipelines(prev => ({ ...prev, [colId]: (prev[colId] || []).filter((_, index) => index !== indexToRemove) }));
+            return { selectedHeaderIds, handleHeaderSelectionChange, headerPipelines, addModuleToPipeline, removeModuleFromPipeline };
+        };
+
+        const evaluatePipeline = (val, pipelineModuleIds) => {
+            if (!pipelineModuleIds || pipelineModuleIds.length === 0) return [String(val || '').trim()];
+            let currentVals = [String(val || '').trim()];
+            for (const modId of pipelineModuleIds) {
+                const module = PREDEFINED_MODULES[modId];
+                if (!module) continue;
+                try {
+                    let nextVals = [];
+                    for (const currentVal of currentVals) {
+                        const result = module.apply(currentVal);
+                        if (Array.isArray(result)) {
+                            nextVals.push(...result.map(v => String(v !== undefined && v !== null ? v : '').trim()));
+                        } else {
+                            nextVals.push(String(result !== undefined && result !== null ? result : '').trim());
+                        }
+                    }
+                    currentVals = [...new Set(nextVals.filter(v => v !== ''))];
+                } catch (e) { return ['#ERROR']; }
+            }
+            return currentVals.length > 0 ? currentVals : [''];
+        };
+
+        const usePdfUploader = () => {
+            const [pdfData, setPdfData] = useState(null);
+            const [pdfFileName, setPdfFileName] = useState('');
+            const [pdfUploadError, setPdfUploadError] = useState(null);
+            const [pdfUploadLoading, setPdfUploadLoading] = useState(false);
+            const [isPdfParsing, setIsPdfParsing] = useState(false);
+            const [pdfPassword, setPdfPassword] = useState('');
+
+            const handlePdfUpload = useCallback(async (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                setPdfUploadLoading(true);
+                setPdfUploadError(null); 
+                setPdfFileName(file.name); 
+                setPdfData(null); 
+                setPdfPassword('');
+                setIsPdfParsing(true);
+                
+                try { 
+                    const arrBuffer = await file.arrayBuffer();
+                    setPdfData(new Uint8Array(arrBuffer)); 
+                } catch (err) { 
+                    setPdfUploadError("Failed to read PDF."); setPdfFileName(''); setIsPdfParsing(false);
+                } finally { 
+                    setPdfUploadLoading(false); if (event.target) event.target.value = null; 
+                }
+            }, []);
+
+            const resetPdfUpload = useCallback(() => { 
+                setPdfData(null); 
+                setPdfFileName(''); 
+                setPdfUploadError(null); 
+                setIsPdfParsing(false); 
+                setPdfPassword('');
+            }, []);
+
+            return { pdfData, pdfFileName, pdfUploadError, pdfUploadLoading, isPdfParsing, setIsPdfParsing, handlePdfUpload, resetPdfUpload, setPdfUploadError, pdfPassword, setPdfPassword };
+        };
+
+        const usePdfMatcher = () => {
+            const [isMatching, setIsMatching] = useState(false);
+            const [matches, setMatches] = useState({}); 
+            const [progress, setProgress] = useState(0);
+            const [statusText, setStatusText] = useState('');
+
+            const runMatching = async (pdfData, filteredRows, selectedHeaderIds, headerPipelines, annotationColId, pdfPassword) => {
+                if (!pdfData || !filteredRows.length || !selectedHeaderIds.length) return;
+                setIsMatching(true); setMatches({}); setProgress(0); setStatusText('Initializing fast scanner...');
+                try {
+                    const dataArray = pdfData.slice();
+                    const loadingTask = window.pdfjsLib.getDocument({
+                        data: dataArray,
+                        password: pdfPassword || ''
+                    });
+                    const doc = await loadingTask.promise;
+                    const numPages = doc.numPages;
+                    const newMatches = {};
+                    const SCALE = 2.0; 
+
+                    setStatusText(`Scanning ${numPages} Pages in parallel...`);
+                    setProgress(10);
+                    
+                    const pagePromises = Array.from({ length: numPages }, async (_, index) => {
+                        const i = index + 1;
+                        const page = await doc.getPage(i);
+                        const textContent = await page.getTextContent();
+                        const viewport = page.getViewport({ scale: SCALE });
+                        const lines = [];
+                        textContent.items.forEach(item => {
+                            if (!item.str || !item.str.trim()) return; 
+                            const tx = item.transform[4];
+                            const ty = item.transform[5];
+                            const w = item.width;
+                            const h = item.height || 12;
+                            const [x0, y0] = viewport.convertToViewportPoint(tx, ty + h);
+                            const [x1, y1] = viewport.convertToViewportPoint(tx + w, ty);
+                            
+                            const line = lines.find(l => Math.abs(l.y - y1) < 5);
+                            const mappedItem = { text: item.str, x0: Math.min(x0, x1), y0: Math.min(y0, y1), x1: Math.max(x0, x1), y1: Math.max(y0, y1) };
+                            if (line) {
+                                line.items.push(mappedItem);
+                                line.minY = Math.min(line.minY, mappedItem.y0);
+                                line.maxY = Math.max(line.maxY, mappedItem.y1);
+                                line.minX = Math.min(line.minX, mappedItem.x0);
+                                line.maxX = Math.max(line.maxX, mappedItem.x1);
+                            } else {
+                                lines.push({ y: y1, minY: mappedItem.y0, maxY: mappedItem.y1, minX: mappedItem.x0, maxX: mappedItem.x1, items: [mappedItem] });
+                            }
+                        });
+                        lines.forEach(l => {
+                            l.items.sort((a, b) => a.x0 - b.x0);
+                            l.fullText = l.items.map(i => i.text).join('').toLowerCase(); 
+                        });
+                        return { pageNumber: i, lines };
+                    });
+
+                    const pageTexts = await Promise.all(pagePromises);
+                    setProgress(50);
+                    setStatusText('Cross-referencing Excel data with PDF layout...');
+                    
+                    let processedRows = 0;
+                    for (const row of filteredRows) {
+                        const searchGroups = selectedHeaderIds.map(id => {
+                            const rawVal = row[id];
+                            const pipeline = headerPipelines[id] || [];
+                            const computedVals = evaluatePipeline(rawVal, pipeline);
+                            return computedVals.includes('#ERROR') ? [] : computedVals.map(v => v.toLowerCase()).filter(v => v.length > 0);
+                        }).filter(group => group.length > 0); 
+
+                        const hasStrongTarget = searchGroups.some(group => group.some(t => t.replace(/\s+/g, '').length > 3));
+                        if (searchGroups.length > 0 && hasStrongTarget) {
+                            let foundMatch = null;
+                            for (const { pageNumber, lines } of pageTexts) {
+                                for (const line of lines) {
+                                    const lineTextNoSpace = line.fullText.replace(/\s+/g, '');
+                                    const allFound = searchGroups.every(group => 
+                                        group.some(target => lineTextNoSpace.includes(target.replace(/\s+/g, '')))
+                                    );
+                                    if (allFound) {
+                                        foundMatch = { pageNum: pageNumber, boundingBox: { x: line.minX - 4, y: line.minY - 4, w: (line.maxX - line.minX) + 8, h: (line.maxY - line.minY) + 8, sourceScale: SCALE } };
+                                        break; 
+                                    }
+                                }
+                                if (foundMatch) break;
+                            }
+                            if (foundMatch) {
+                                newMatches[row.id] = { ...foundMatch, annotationText: annotationColId ? row[annotationColId] : '' };
+                            }
+                        }
+                        processedRows++;
+                        if (processedRows % 10 === 0) setProgress(50 + Math.round((processedRows / filteredRows.length) * 50));
+                    }
+                    setMatches(newMatches);
+                    setStatusText(`Reconciliation complete: ${Object.keys(newMatches).length} of ${filteredRows.length} rows matched.`);
+                } catch (err) { 
+                    console.error("Scanning Error:", err); 
+                    setStatusText("Error during scanning. If PDF has a password, please check it."); 
+                } finally { 
+                    setIsMatching(false); 
+                    setProgress(100); 
+                }
+            };
+            return { runMatching, isMatching, matches, progress, statusText };
+        };
+
+        const PdfPage = ({ doc, pageNum, highlights, activeRowId, zoom, annotationPosition }) => {
+            const canvasRef = useRef(null);
+            const containerRef = useRef(null);
+            const [renderData, setRenderData] = useState(null);
+
+            useEffect(() => {
+                let renderTask = null;
+                let isActive = true;
+                
+                const renderPage = async () => {
+                    if (!doc || !canvasRef.current) return;
+                    try {
+                        const page = await doc.getPage(pageNum);
+                        if (!isActive) return; 
+                        
+                        const baseScale = 2.0; 
+                        const viewport = page.getViewport({ scale: baseScale });
+                        const canvas = canvasRef.current;
+                        const context = canvas.getContext('2d');
+                        
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        
+                        renderTask = page.render({ canvasContext: context, viewport });
+                        await renderTask.promise;
+                        
+                        if (isActive) {
+                            setRenderData({ viewport, baseScale });
+                        }
+                    } catch (err) { 
+                        if (err.name !== 'RenderingCancelledException') console.error("PDF Render Error:", err); 
+                    }
+                };
+                
+                renderPage();
+                
+                return () => { 
+                    isActive = false;
+                    if (renderTask) renderTask.cancel(); 
+                };
+            }, [doc, pageNum]);
+
+            useEffect(() => {
+                if (activeRowId && highlights?.some(h => h.rowId === activeRowId)) {
+                    containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }, [activeRowId, highlights]);
+
+            const displayScale = 1.0 * zoom; 
+            let cssWidth = '100%';
+            if (renderData) {
+                cssWidth = `${(renderData.viewport.width / renderData.baseScale) * displayScale}px`;
+            }
+
+            return (
+                <Box ref={containerRef} sx={{ position: 'relative', mb: 2, mx: 'auto', boxShadow: 3, bgcolor: 'white', width: cssWidth, transition: 'width 0.2s ease-out', flexShrink: 0 }}>
+                    <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: 'auto' }} />
+                    {renderData && highlights?.map((hl, idx) => {
+                        const { x, y, w, h, sourceScale } = hl.boundingBox;
+                        const ratio = displayScale / sourceScale;
+                        const isActive = hl.rowId === activeRowId;
+                        return (
+                            <div key={idx} style={{
+                                position: 'absolute',
+                                left: `${x * ratio}px`, top: `${y * ratio}px`, width: `${w * ratio}px`, height: `${h * ratio}px`,
+                                border: isActive ? '3px solid rgba(244, 67, 54, 0.9)' : '2px solid rgba(255, 193, 7, 0.7)',
+                                backgroundColor: isActive ? 'rgba(244, 67, 54, 0.25)' : 'rgba(255, 193, 7, 0.25)',
+                                pointerEvents: 'none', borderRadius: '4px',
+                                boxShadow: isActive ? '0 0 15px rgba(244, 67, 54, 0.7)' : 'none',
+                                zIndex: isActive ? 10 : 5, transition: 'all 0.3s ease'
+                            }}>
+                                {hl.annotationText && (
+                                    <div style={{
+                                        position: 'absolute',
+                                        backgroundColor: isActive ? 'rgba(244, 67, 54, 0.9)' : 'rgba(255, 193, 7, 0.9)',
+                                        color: isActive ? '#fff' : '#000', padding: '2px 6px', borderRadius: '4px',
+                                        fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap', boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                                        ...(annotationPosition === 'left' ? { right: '100%', top: '50%', transform: 'translateY(-50%)', marginRight: '6px' } :
+                                           annotationPosition === 'top' ? { bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: '6px' } :
+                                           annotationPosition === 'bottom' ? { top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: '6px' } :
+                                           { left: '100%', top: '50%', transform: 'translateY(-50%)', marginLeft: '6px' })
+                                    }}>
+                                        {hl.annotationText}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </Box>
+            );
+        };
+
+        const PdfViewer = ({ pdfData, matches, activeMatchRowId, exportPdf, isMatching, progress, pdfUploadLoading, isPdfParsing, setIsPdfParsing, annotationPosition, pdfPassword, setPdfPassword }) => {
+            const [doc, setDoc] = useState(null);
+            const [numPages, setNumPages] = useState(0);
+            const [zoom, setZoom] = useState(1);
+            const [isPanning, setIsPanning] = useState(false);
+            const containerRef = useRef(null);
+            const isDragging = useRef(false);
+            const startPos = useRef({ x: 0, y: 0 });
+            const scrollPos = useRef({ left: 0, top: 0 });
+
+            useEffect(() => {
+                let active = true;
+                const loadPdf = async () => {
+                    if (!pdfData) {
+                        if (active) { setDoc(null); setNumPages(0); setIsPdfParsing(false); }
+                        return;
+                    }
+                    
+                    if (active) setIsPdfParsing(true);
+                    
+                    try {
+                        const dataArray = pdfData.slice();
+                        const loadingTask = window.pdfjsLib.getDocument({
+                            data: dataArray,
+                            password: pdfPassword || '',
+                            onPassword: (callback, reason) => {
+                                const promptMsg = reason === 2 
+                                    ? "Incorrect password. Please try again:" 
+                                    : "This PDF is password-protected. Enter password:";
+                                const entered = prompt(promptMsg);
+                                if (entered !== null) {
+                                    setPdfPassword(entered);
+                                    callback(entered);
+                                } else {
+                                    callback(new Error("Password prompt cancelled"));
+                                }
+                            }
+                        });
+
+                        const loadedDoc = await loadingTask.promise;
+                        if (active) {
+                            setDoc(loadedDoc); 
+                            setNumPages(loadedDoc.numPages);
+                        }
+                    } catch(e) { 
+                        console.error("PDF Load Error:", e);
+                        if (e.name === 'PasswordException') {
+                            const entered = prompt("Password required for this PDF:");
+                            if (entered) {
+                                setPdfPassword(entered);
+                            }
+                        }
+                    } finally { 
+                        if (active) setIsPdfParsing(false); 
+                    }
+                };
+                
+                loadPdf();
+                
+                return () => { active = false; };
+            }, [pdfData, pdfPassword, setIsPdfParsing, setPdfPassword]);
+
+            const highlightsByPage = useMemo(() => {
+                const map = {};
+                Object.entries(matches).forEach(([rowId, match]) => {
+                    if (!map[match.pageNum]) map[match.pageNum] = [];
+                    map[match.pageNum].push({ rowId, boundingBox: match.boundingBox, annotationText: match.annotationText });
+                });
+                return map;
+            }, [matches]);
+
+            const handleMouseDown = (e) => {
+                if (!isPanning || !containerRef.current) return;
+                isDragging.current = true;
+                startPos.current = { x: e.clientX, y: e.clientY };
+                scrollPos.current = { left: containerRef.current.scrollLeft, top: containerRef.current.scrollTop };
+                containerRef.current.style.cursor = 'grabbing';
+            };
+            const handleMouseMove = (e) => {
+                if (!isDragging.current || !isPanning || !containerRef.current) return;
+                const dx = e.clientX - startPos.current.x;
+                const dy = e.clientY - startPos.current.y;
+                containerRef.current.scrollLeft = scrollPos.current.left - dx;
+                containerRef.current.scrollTop = scrollPos.current.top - dy;
+            };
+            const handleMouseUpOrLeave = () => {
+                if (isDragging.current) {
+                    isDragging.current = false;
+                    if (containerRef.current) containerRef.current.style.cursor = isPanning ? 'grab' : 'auto';
+                }
+            };
+
+            if (pdfUploadLoading) return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#f5f5f5', width: '100%' }}>
+                    <CircularProgress size={50} sx={{ mb: 3 }} />
+                    <Typography variant="h6">Reading PDF File...</Typography>
+                </Box>
+            );
+
+            if (isPdfParsing || isMatching) return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#9e9e9e', width: '100%' }}>
+                    <CircularProgress size={50} sx={{ mb: 3 }} style={{ color: 'white' }} />
+                    <Typography color="white" variant="h6">
+                        {isMatching ? 'Reconciling Data...' : 'Parsing Document...'}
+                    </Typography>
+                    <Typography color="white" variant="body2" sx={{ opacity: 0.8 }}>
+                        {isMatching ? `${progress}% Complete` : 'This may take a few seconds for large PDFs'}
+                    </Typography>
+                </Box>
+            );
+
+            if (!pdfData) return (
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', bgcolor: '#f5f5f5', width: '100%' }}>
+                    <Typography color="text.secondary">No PDF uploaded</Typography>
+                </Box>
+            );
+
+            return (
+                <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
+                    <Box sx={{ display: 'flex', gap: 1, p: 1, borderBottom: '1px solid #ddd', bgcolor: '#f5f5f5', alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+                        <IconButton size="small" onClick={() => setZoom(z => Math.max(0.5, z - 0.2))} title="Zoom Out"><Icon name="zoom-out" size={18} /></IconButton>
+                        <Typography variant="body2" sx={{ minWidth: 40, textAlign: 'center' }}>{Math.round(zoom * 100)}%</Typography>
+                        <IconButton size="small" onClick={() => setZoom(z => Math.min(3, z + 0.2))} title="Zoom In"><Icon name="zoom-in" size={18} /></IconButton>
+                        <IconButton size="small" onClick={() => setZoom(1)} title="Reset Zoom"><Icon name="refresh-ccw" size={16} /></IconButton>
+                        <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+                        <Button size="small" variant={isPanning ? "contained" : "outlined"} onClick={() => setIsPanning(!isPanning)} startIcon={<Icon name={isPanning ? 'hand' : 'mouse-pointer'} size={16} />}>
+                            Pan
+                        </Button>
+                        <Box sx={{ flexGrow: 1 }} />
+                        <Button size="small" variant="contained" color="secondary" onClick={exportPdf} startIcon={<Icon name="save" size={16} />} disabled={Object.keys(matches).length === 0}>
+                            Save PDF
+                        </Button>
+                    </Box>
+
+                    <Box 
+                        ref={containerRef}
+                        onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUpOrLeave} onMouseLeave={handleMouseUpOrLeave}
+                        sx={{ 
+                            flexGrow: 1, width: '100%', overflow: 'auto', bgcolor: '#9e9e9e', p: 2, 
+                            display: 'block', 
+                            cursor: isPanning ? 'grab' : 'auto', userSelect: isPanning ? 'none' : 'auto'
+                        }}
+                    >
+                        {Array.from({ length: numPages }).map((_, i) => (
+                            <PdfPage key={i + 1} doc={doc} pageNum={i + 1} zoom={zoom} highlights={highlightsByPage[i + 1] || []} activeRowId={activeMatchRowId} annotationPosition={annotationPosition} />
+                        ))}
+                    </Box>
+                </Box>
+            );
+        };
+
+        function App() {
+            const { workbook, sheetNames, fileName, uploadError, uploadLoading, handleFileUpload, resetUpload, setUploadError } = useExcelUploader();
+            const [selectedSheet, setSelectedSheet] = useState('');
+            const { suggestedRange, customRange, headers, rows, handleRangeChange, sheetError } = useSheetData(workbook, selectedSheet);
+            
+            const [filters, setFilters] = useState({});
+            const filteredRows = useFilteredData(rows, filters);
+
+            const { selectedHeaderIds, handleHeaderSelectionChange, headerPipelines, addModuleToPipeline, removeModuleFromPipeline } = useHeaderSelection();
+
+            const { pdfData, pdfFileName, handlePdfUpload, resetPdfUpload, pdfUploadError, pdfUploadLoading, isPdfParsing, setIsPdfParsing, pdfPassword, setPdfPassword } = usePdfUploader();
+            const { runMatching, isMatching, matches, progress, statusText } = usePdfMatcher();
+
+            const [showOnlySelectedColumns, setShowOnlySelectedColumns] = useState(false);
+            const [annotationColumnId, setAnnotationColumnId] = useState('');
+            const [annotationPosition, setAnnotationPosition] = useState('right');
+
+            const displayColumns = useMemo(() => {
+                const cols = [];
+                const maxVariations = {};
+                
+                selectedHeaderIds.forEach(id => {
+                    let maxLen = 1;
+                    const pipeline = headerPipelines[id] || [];
+                    if (pipeline.length > 0) {
+                        const rowsToScan = filteredRows.slice(0, 1000); 
+                        for (const row of rowsToScan) {
+                            const res = evaluatePipeline(row[id], pipeline);
+                            if (Array.isArray(res) && res.length > maxLen) {
+                                maxLen = res.length;
+                            }
+                        }
+                    }
+                    maxVariations[id] = maxLen;
+                });
+
+                headers.forEach(header => {
+                    const isSelected = selectedHeaderIds.includes(header.id);
+                    if (showOnlySelectedColumns && selectedHeaderIds.length > 0 && !isSelected) return;
+
+                    cols.push({ ...header, isOriginal: true });
+                    if (isSelected) {
+                        const count = maxVariations[header.id] || 1;
+                        for (let i = 0; i < count; i++) {
+                            cols.push({ 
+                                ...header, 
+                                id: `${header.id}_computed_${i}`, 
+                                originalId: header.id, 
+                                isComputed: true, 
+                                variationIndex: i, 
+                                label: count > 1 ? `${header.label} (Var ${i + 1})` : `${header.label} (Formatted)` 
+                            });
+                        }
+                    }
+                });
+                return cols;
+            }, [headers, selectedHeaderIds, headerPipelines, filteredRows, showOnlySelectedColumns]);
+
+            const rowComputedData = useMemo(() => {
+                const data = {};
+                filteredRows.forEach(row => {
+                    data[row.id] = {};
+                    selectedHeaderIds.forEach(id => {
+                        data[row.id][id] = evaluatePipeline(row[id], headerPipelines[id]);
+                    });
+                });
+                return data;
+            }, [filteredRows, selectedHeaderIds, headerPipelines]);
+
+            const [activeMatchRowId, setActiveMatchRowId] = useState(null); 
+            const fileInputRef = useRef(null);
+            const pdfInputRef = useRef(null);
+
+            const handleFilterChange = (colId, value) => setFilters(prev => ({ ...prev, [colId]: value }));
+            const handleCloseError = () => { if (uploadError) setUploadError(null); };
+
+            useEffect(() => {
+                if (sheetNames && sheetNames.length > 0) setSelectedSheet(sheetNames[0]);
+                else setSelectedSheet('');
+            }, [sheetNames]);
+
+            useEffect(() => { setFilters({}); setActiveMatchRowId(null); setShowOnlySelectedColumns(false); setAnnotationColumnId(''); }, [selectedSheet, customRange]);
+
+            const handleExportExcel = () => {
+                if (!window.XLSX || filteredRows.length === 0) return;
+                const exportData = filteredRows.map(row => {
+                    const rowData = {};
+                    const matchData = matches[row.id];
+                    rowData['PDF Match Page'] = matchData ? `Page ${matchData.pageNum}` : 'Not Found';
+                    displayColumns.forEach(col => {
+                        if (col.isOriginal) {
+                            rowData[col.label] = row[col.id] || '';
+                        } else if (col.isComputed) {
+                            const resultArr = rowComputedData[row.id][col.originalId];
+                            const arr = Array.isArray(resultArr) ? resultArr : [resultArr];
+                            rowData[col.label] = String(arr[col.variationIndex] !== undefined && arr[col.variationIndex] !== null ? arr[col.variationIndex] : '');
+                        }
+                    });
+                    return rowData;
+                });
+                const worksheet = window.XLSX.utils.json_to_sheet(exportData);
+                const workbook = window.XLSX.utils.book_new();
+                window.XLSX.utils.book_append_sheet(workbook, worksheet, "Reconciliation Results");
+                window.XLSX.writeFile(workbook, "Reconciliation_Results.xlsx");
+            };
+
+            const handleExportPdf = async () => {
+                if (!pdfData || !window.PDFLib) return;
+                try {
+                    const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
+                    const pdfDoc = await PDFDocument.load(pdfData.slice(), { ignoreEncryption: true });
+                    const helveticaFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+                    const pages = pdfDoc.getPages();
+                    Object.values(matches).forEach(match => {
+                        const page = pages[match.pageNum - 1];
+                        if (!page) return;
+                        const { height } = page.getSize();
+                        const { x, y, w, h, sourceScale } = match.boundingBox;
+                        const pdfX = x / sourceScale;
+                        const pdfW = w / sourceScale;
+                        const pdfH = h / sourceScale;
+                        const pdfY = height - (y / sourceScale) - pdfH;
+                        page.drawRectangle({
+                            x: pdfX, y: pdfY, width: pdfW, height: pdfH,
+                            borderColor: rgb(1, 0.2, 0.2), borderWidth: 1.5,
+                            color: rgb(1, 0.2, 0.2), opacity: 0.1, borderOpacity: 0.8
+                        });
+                        if (match.annotationText) {
+                            const textWidth = helveticaFont.widthOfTextAtSize(String(match.annotationText), 10);
+                            let textX, textY;
+                            switch(annotationPosition) {
+                                case 'left': textX = pdfX - textWidth - 4; textY = pdfY + (pdfH / 2) - 4; break;
+                                case 'top': textX = pdfX + (pdfW / 2) - (textWidth / 2); textY = pdfY + pdfH + 4; break;
+                                case 'bottom': textX = pdfX + (pdfW / 2) - (textWidth / 2); textY = pdfY - 12; break;
+                                case 'right':
+                                default: textX = pdfX + pdfW + 4; textY = pdfY + (pdfH / 2) - 4; break;
+                            }
+                            page.drawText(String(match.annotationText), {
+                                x: textX,
+                                y: textY,
+                                size: 10,
+                                font: helveticaFont,
+                                color: rgb(0.9, 0.1, 0.1)
+                            });
+                        }
+                    });
+                    const pdfBytes = await pdfDoc.save();
+                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = 'Reconciliation_Matches.pdf';
+                    link.click();
+                } catch(err) { console.error("Failed to export PDF", err); }
+            };
+
+            const activeError = uploadError || sheetError || pdfUploadError || null;
+
+            return (
+                <ThemeProvider theme={theme}>
+                    <CssBaseline />
+                    <Box sx={{ minHeight: '100vh', py: 4, bgcolor: 'background.default' }}>
+                        <Container maxWidth="xl">
+                            <Box sx={{ mb: 4, textAlign: 'center' }}>
+                                <Typography variant="h3" component="h1" gutterBottom sx={{ fontWeight: 'bold', color: 'primary.main' }}>
+                                    Automated Reconciliation Platform
+                                </Typography>
+                                <Typography variant="subtitle1" color="text.secondary">
+                                    Filter Excel rows, map specific columns, and automatically locate their exact matches in PDF layouts.
+                                </Typography>
+                            </Box>
+
+                            <Paper elevation={3} sx={{ p: { xs: 2, md: 4 }, borderRadius: 2, mb: 4 }}>
+                                <Grid container spacing={4}>
+                                    <Grid item xs={12} md={6}>
+                                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2, border: '1px solid #e0e0e0', borderRadius: 2 }}>
+                                            <Typography variant="h6">1. Upload Excel Data</Typography>
+                                            <input type="file" accept=".xlsx, .xls, .csv" style={{ display: 'none' }} ref={fileInputRef} onChange={handleFileUpload} />
+                                            {!fileName ? (
+                                                <Button variant="outlined" color="primary" startIcon={<Icon name="upload" />} onClick={() => fileInputRef.current?.click()} disabled={uploadLoading} fullWidth sx={{ py: 1.5 }}>
+                                                    {uploadLoading ? 'Uploading...' : 'Select Excel File'}
+                                                </Button>
+                                            ) : (
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, border: '1px solid', borderColor: 'success.main', borderRadius: 1, bgcolor: '#e8f5e9' }}>
+                                                    <Icon name="check-circle" color="#4caf50" />
+                                                    <Typography variant="body2" sx={{ flexGrow: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</Typography>
+                                                    <IconButton size="small" onClick={resetUpload} color="error" title="Remove file"><Icon name="refresh-ccw" size={18} /></IconButton>
+                                                </Box>
+                                            )}
+
+                                            {fileName && (
+                                                <Grid container spacing={2}>
+                                                    <Grid item xs={12} sm={6}>
+                                                        <FormControl fullWidth size="small">
+                                                            <InputLabel shrink>Select Sheet</InputLabel>
+                                                            <Select native value={selectedSheet} onChange={(e) => setSelectedSheet(e.target.value)} label="Select Sheet">
+                                                                <option value="" disabled>Select...</option>
+                                                                {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
+                                                            </Select>
+                                                        </FormControl>
+                                                        <Box sx={{ mt: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold' }}>Formatting Pipeline</Typography>
+                                                        </Box>
+                                                        {selectedHeaderIds.length > 0 && (
+                                                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, p: 1.5, mt: 1, bgcolor: 'grey.50', borderRadius: 1, border: '1px solid #eee' }}>
+                                                                {selectedHeaderIds.map(id => {
+                                                                    const header = headers.find(h => h.id === id);
+                                                                    const currentPipeline = headerPipelines[id] || [];
+                                                                    return (
+                                                                        <Box key={id} sx={{ p: 1, border: '1px solid #ddd', borderRadius: 1, bgcolor: 'white' }}>
+                                                                            <Typography variant="subtitle2" sx={{ mb: 1, color: 'primary.dark' }}>{header?.label}</Typography>
+                                                                            {currentPipeline.length > 0 && (
+                                                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
+                                                                                    {currentPipeline.map((modId, index) => {
+                                                                                        const mod = PREDEFINED_MODULES[modId];
+                                                                                        return <Chip key={`${modId}-${index}`} label={mod ? mod.name : 'Unknown Module'} size="small" color="primary" variant="outlined" onDelete={() => removeModuleFromPipeline(id, index)} icon={<Icon name="arrow-down" size={12} />} />;
+                                                                                    })}
+                                                                                </Box>
+                                                                            )}
+                                                                            <FormControl size="small" fullWidth>
+                                                                                <Select displayEmpty value="" onChange={(e) => addModuleToPipeline(id, e.target.value)} sx={{ '& .MuiSelect-select': { py: 0.5, fontSize: '0.8rem' } }}>
+                                                                                    <MenuItem value="" disabled><em>+ Add Step...</em></MenuItem>
+                                                                                    {Object.keys(PREDEFINED_MODULES).map(modId => <MenuItem key={modId} value={modId} sx={{ fontSize: '0.8rem' }}>{PREDEFINED_MODULES[modId].name}</MenuItem>)}
+                                                                                </Select>
+                                                                            </FormControl>
+                                                                        </Box>
+                                                                    );
+                                                                })}
+                                                            </Box>
+                                                        )}
+                                                    </Grid>
+                                                    <Grid item xs={12} sm={6}>
+                                                        <TextField fullWidth size="small" label="Data Range" value={customRange} onChange={(e) => handleRangeChange(e.target.value)} helperText={suggestedRange ? `Auto: ${suggestedRange}` : ''} InputLabelProps={{ shrink: true }} />
+                                                    </Grid>
+                                                </Grid>
+                                            )}
+                                        </Box>
+                                    </Grid>
+
+                                    <Grid item xs={12} md={6}>
+                                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2, border: '1px solid #e0e0e0', borderRadius: 2, opacity: fileName && selectedSheet ? 1 : 0.5, pointerEvents: fileName && selectedSheet ? 'auto' : 'none' }}>
+                                            <Typography variant="h6">2. Configure PDF Matcher</Typography>
+                                            <input type="file" accept="application/pdf" style={{ display: 'none' }} ref={pdfInputRef} onChange={handlePdfUpload} />
+                                            {!pdfFileName ? (
+                                                <Button variant="outlined" color="secondary" startIcon={pdfUploadLoading ? <CircularProgress size={20} color="inherit" /> : <Icon name="file-text" />} onClick={() => pdfInputRef.current?.click()} disabled={pdfUploadLoading} fullWidth sx={{ py: 1.5 }}>
+                                                    Upload Target PDF
+                                                </Button>
+                                            ) : (
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, border: '1px solid', borderColor: 'secondary.main', borderRadius: 1, bgcolor: '#e3f2fd' }}>
+                                                    <Icon name="check-circle" color="#1976d2" />
+                                                    <Typography variant="body2" sx={{ flexGrow: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdfFileName}</Typography>
+                                                    <IconButton size="small" onClick={resetPdfUpload} color="error" title="Remove file"><Icon name="refresh-ccw" size={18} /></IconButton>
+                                                </Box>
+                                            )}
+
+                                            <FormControl fullWidth size="small" disabled={headers.length === 0}>
+                                                <InputLabel id="header-select-label">Select Columns to Search in PDF</InputLabel>
+                                                <Select labelId="header-select-label" multiple value={selectedHeaderIds} onChange={handleHeaderSelectionChange} input={<OutlinedInput label="Select Columns to Search in PDF" />} renderValue={(selected) => (
+                                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                                        {selected.map((value) => {
+                                                            const header = headers.find(h => h.id === value);
+                                                            return <Chip key={value} label={header ? header.label : value} size="small" />;
+                                                        })}
+                                                    </Box>
+                                                )}>
+                                                    {headers.map((header) => (
+                                                        <MenuItem key={header.id} value={header.id}><Checkbox checked={selectedHeaderIds.indexOf(header.id) > -1} /><ListItemText primary={header.label} /></MenuItem>
+                                                    ))}
+                                                </Select>
+                                            </FormControl>
+
+                                            <FormControl fullWidth size="small" disabled={headers.length === 0}>
+                                                <InputLabel id="annotation-select-label">Optional: Print Column Value on PDF Match</InputLabel>
+                                                <Select labelId="annotation-select-label" value={annotationColumnId} onChange={(e) => setAnnotationColumnId(e.target.value)} label="Optional: Print Column Value on PDF Match">
+                                                    <MenuItem value=""><em>None</em></MenuItem>
+                                                    {headers.map((header) => (
+                                                        <MenuItem key={header.id} value={header.id}>{header.label}</MenuItem>
+                                                    ))}
+                                                </Select>
+                                            </FormControl>
+
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                                                <Typography variant="body2" color="text.secondary" sx={{ minWidth: 120 }}>Annotation Position:</Typography>
+                                                <ButtonGroup size="small" disabled={!annotationColumnId} fullWidth>
+                                                    {['left', 'top', 'bottom', 'right'].map(pos => (
+                                                        <Button 
+                                                            key={pos}
+                                                            variant={annotationPosition === pos ? 'contained' : 'outlined'}
+                                                            onClick={() => setAnnotationPosition(pos)}
+                                                            sx={{ textTransform: 'capitalize', flexGrow: 1 }}
+                                                        >
+                                                            {pos}
+                                                        </Button>
+                                                    ))}
+                                                </ButtonGroup>
+                                            </Box>
+
+                                            <Button 
+                                                variant="contained" color="primary" fullWidth size="large"
+                                                startIcon={isMatching ? <CircularProgress size={20} color="inherit" /> : <Icon name="settings" />}
+                                                onClick={() => runMatching(pdfData, filteredRows, selectedHeaderIds, headerPipelines, annotationColumnId, pdfPassword)}
+                                                disabled={isMatching || !pdfData || selectedHeaderIds.length === 0 || filteredRows.length === 0}
+                                            >
+                                                {isMatching ? `Scanning... (${progress}%)` : 'Reconcile'}
+                                            </Button>
+                                            {statusText && !isMatching && (
+                                                <Typography variant="body2" color="success.main" sx={{ textAlign: 'center', fontWeight: 'bold' }}>
+                                                    {statusText}
+                                                </Typography>
+                                            )}
+                                        </Box>
+                                    </Grid>
+                                </Grid>
+                            </Paper>
+
+                            {selectedSheet && headers.length > 0 && (
+                                <Grid container spacing={3} sx={{ height: '75vh', minHeight: 600 }}>
+                                    <Grid item xs={12} lg={7} sx={{ height: '100%', mb: 0 }}>
+                                        <Paper sx={{ p: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
+                                            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
+                                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                        <Icon name="filter" size={24} color="#2e7d32" />
+                                                        <Typography variant="h6">Data Grid ({filteredRows.length} rows)</Typography>
+                                                    </Box>
+                                                    <FormControlLabel
+                                                        control={
+                                                            <Switch 
+                                                                size="small" 
+                                                                checked={showOnlySelectedColumns && selectedHeaderIds.length > 0} 
+                                                                onChange={(e) => setShowOnlySelectedColumns(e.target.checked)} 
+                                                                disabled={selectedHeaderIds.length === 0}
+                                                            />
+                                                        }
+                                                        label={<Typography variant="body2" color="text.secondary">Show only selected columns</Typography>}
+                                                    />
+                                                </Box>
+                                                <Button size="small" variant="outlined" color="primary" startIcon={<Icon name="download" size={16} />} onClick={handleExportExcel} disabled={filteredRows.length === 0}>
+                                                    Export Data
+                                                </Button>
+                                            </Box>
+
+                                            <TableContainer component={Box} sx={{ flexGrow: 1, overflow: 'auto', border: '1px solid #e0e0e0' }}>
+                                                <Table stickyHeader size="small" aria-label="data table">
+                                                    <TableHead>
+                                                        <TableRow>
+                                                            <TableCell sx={{ minWidth: 100, bgcolor: '#e3f2fd', borderRight: '2px solid #ddd', zIndex: 11, position: 'sticky', left: 0, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
+                                                                <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: 'secondary.main' }}>
+                                                                    PDF Page
+                                                                </Typography>
+                                                                <Typography variant="caption" color="text.secondary">Matches found</Typography>
+                                                            </TableCell>
+                                                            {displayColumns.map((col) => (
+                                                                <TableCell key={col.id} sx={{ minWidth: col.isComputed ? 180 : 150, bgcolor: col.isComputed ? '#e8f5e9' : '#ffffff', verticalAlign: 'top', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none', zIndex: 10 }}>
+                                                                    <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, color: col.isComputed ? 'primary.dark' : 'inherit' }}>
+                                                                        {col.label}
+                                                                        {col.isComputed && <Chip size="small" label="Search Key" color="primary" sx={{ ml: 1, height: 16, fontSize: '0.6rem' }} />}
+                                                                    </Typography>
+                                                                    {col.isOriginal ? (
+                                                                        <TextField size="small" placeholder="Filter..." variant="outlined" fullWidth value={filters[col.id] || ''} onChange={(e) => handleFilterChange(col.id, e.target.value)} sx={{ bgcolor: 'white' }} inputProps={{ style: { fontSize: '0.8rem', padding: '6px 10px' } }} />
+                                                                    ) : (
+                                                                        <Typography variant="caption" color="primary.main" sx={{ fontStyle: 'italic' }}>Live Formula Preview</Typography>
+                                                                    )}
+                                                                </TableCell>
+                                                            ))}
+                                                        </TableRow>
+                                                    </TableHead>
+                                                    <TableBody>
+                                                        {filteredRows.map((row) => {
+                                                            const matchData = matches[row.id];
+                                                            const isSelected = activeMatchRowId === row.id;
+                                                            const computedResults = rowComputedData[row.id];
+
+                                                            return (
+                                                                <TableRow hover key={row.id} onClick={() => matchData && setActiveMatchRowId(row.id)} sx={{ cursor: matchData ? 'pointer' : 'default', bgcolor: isSelected ? '#e3f2fd' : 'inherit', '&:hover': { bgcolor: matchData ? '#bbdefb' : 'action.hover' } }}>
+                                                                    <TableCell sx={{ borderRight: '2px solid #ddd', fontWeight: 'bold', color: matchData ? 'secondary.main' : 'text.disabled', position: 'sticky', left: 0, bgcolor: isSelected ? '#bbdefb' : (matchData ? '#e3f2fd' : '#ffffff'), zIndex: 10, boxShadow: '2px 0 5px -2px rgba(0,0,0,0.2)' }}>
+                                                                        {matchData ? (
+                                                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                                Pg {matchData.pageNum}
+                                                                                <Icon name="maximize" size={14} />
+                                                                            </Box>
+                                                                        ) : '-'}
+                                                                    </TableCell>
+                                                                    {displayColumns.map((col) => {
+                                                                        let cellValue = '';
+                                                                        if (col.isOriginal) {
+                                                                            cellValue = row[col.id] || '';
+                                                                        } else if (col.isComputed) {
+                                                                            const resultArr = computedResults[col.originalId];
+                                                                            const arr = Array.isArray(resultArr) ? resultArr : [resultArr];
+                                                                            cellValue = String(arr[col.variationIndex] !== undefined && arr[col.variationIndex] !== null ? arr[col.variationIndex] : '');
+                                                                        }
+                                                                        const isError = cellValue === '#ERROR';
+                                                                        
+                                                                        return (
+                                                                            <TableCell key={`${row.id}-${col.id}`} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200, bgcolor: col.isComputed ? '#e8f5e9' : 'inherit', color: isError ? '#d32f2f' : 'inherit', borderLeft: col.isComputed ? '1px dashed #ccc' : 'none' }}>
+                                                                                <Tooltip title={cellValue} placement="top-start" arrow disableInteractive>
+                                                                                    <span>{cellValue}</span>
+                                                                                </Tooltip>
+                                                                            </TableCell>
+                                                                        );
+                                                                    })}
+                                                                </TableRow>
+                                                            );
+                                                        })}
+                                                        {filteredRows.length === 0 && (
+                                                            <TableRow><TableCell colSpan={displayColumns.length + 1} align="center" sx={{ py: 4 }}><Typography color="text.secondary">No matching rows.</Typography></TableCell></TableRow>
+                                                        )}
+                                                    </TableBody>
+                                                </Table>
+                                            </TableContainer>
+                                        </Paper>
+                                    </Grid>
+                                    
+                                    <Grid item xs={12} lg={5} sx={{ height: '100%' }}>
+                                        <Paper sx={{ p: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid #ddd' }}>
+                                            <PdfViewer 
+                                                pdfData={pdfData} matches={matches} activeMatchRowId={activeMatchRowId} 
+                                                exportPdf={handleExportPdf} isMatching={isMatching} progress={progress} 
+                                                pdfUploadLoading={pdfUploadLoading} isPdfParsing={isPdfParsing} setIsPdfParsing={setIsPdfParsing} 
+                                                annotationPosition={annotationPosition}
+                                                pdfPassword={pdfPassword}
+                                                setPdfPassword={setPdfPassword}
+                                            />
+                                        </Paper>
+                                    </Grid>
+                                </Grid>
+                            )}
+                        </Container>
+                        
+                        <Snackbar open={!!activeError} autoHideDuration={6000} onClose={handleCloseError} message={activeError} action={<IconButton size="small" color="inherit" onClick={handleCloseError}><Icon name="x" size={20} /></IconButton>} />
+                    </Box>
+                </ThemeProvider>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
