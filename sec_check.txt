@@ -1,0 +1,4 @@
+I have written this single html+js tool which reconcils the excel lines items against pdf, I am attaching the same (when we load excel or pdf in this tool), This will run on same secured machine/laptop which has the excel and pdf.
+
+please confirm if we upload sensitive excel and pdfs in this tool, is it going to upload them anywhere outside in internet. 
+
